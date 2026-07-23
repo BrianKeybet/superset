@@ -1035,6 +1035,21 @@ def _setup_user_context() -> MCPUser | None:
         return None
 
     _assert_user_active(user)
+
+    # AI Assistant: when tools are invoked in-process by the agent, merge the ORM
+    # user into the current db session so write operations (e.g. ChartDAO.create)
+    # don't fail with "Object is already attached to session N (this is M)".
+    if isinstance(user, User):
+        try:
+            from superset.extensions import db
+
+            user = db.session.merge(user)
+        except Exception as merge_err:  # pylint: disable=broad-except
+            logger.debug(
+                "Could not merge user into current session (continuing): %s",
+                merge_err,
+            )
+
     g.user = user
     # GuestUser (embedded auth) has no numeric id; leave the ContextVar
     # cleared (already reset above) rather than raise.

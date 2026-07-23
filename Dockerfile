@@ -256,13 +256,17 @@ FROM python-common AS lean
 # Requirements are installed *before* the application source is copied
 # below so that source-only changes don't bust this (slow, network-bound)
 # cache layer or defeat --cache-from.
-COPY requirements/base.txt requirements/
+COPY requirements/base.txt requirements/ai-assistant.txt requirements/
 
 # Copy superset-core package needed for editable install in base.txt
 COPY superset-core superset-core
 
 RUN --mount=type=cache,target=${SUPERSET_HOME}/.cache/uv \
     /app/docker/pip-install.sh --requires-build-essential -r requirements/base.txt
+
+# Install AI Assistant dependencies (optional, skip if LangChain install fails)
+RUN --mount=type=cache,target=${SUPERSET_HOME}/.cache/uv \
+    /app/docker/pip-install.sh -r requirements/ai-assistant.txt || echo "⚠️  AI Assistant dependencies skipped (optional)"
 
 # Copy compiled frontend assets and application source now that
 # dependencies have been resolved and cached above.
@@ -352,6 +356,10 @@ COPY superset-extensions-cli superset-extensions-cli
 RUN --mount=type=cache,target=${SUPERSET_HOME}/.cache/uv \
     grep -vxF -- "-e ." requirements/development.txt > requirements/development-deps.txt && \
     /app/docker/pip-install.sh --requires-build-essential -r requirements/development-deps.txt
+
+# Install AI Assistant dependencies (optional, skip if LangChain install fails)
+RUN --mount=type=cache,target=${SUPERSET_HOME}/.cache/uv \
+    /app/docker/pip-install.sh -r requirements/ai-assistant.txt || echo "⚠️  AI Assistant dependencies skipped (optional)"
 
 # Copy compiled frontend assets and application source now that
 # dependencies have been resolved and cached above.

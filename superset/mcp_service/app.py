@@ -907,6 +907,64 @@ from superset.mcp_service.user.tool import (  # noqa: F401, E402
     list_users,
 )
 
+# ---------------------------------------------------------------------------
+# AI Assistant helpers
+# ---------------------------------------------------------------------------
+# The in-process AI Assistant agent (superset/ai_assistant/mcp_client.py) calls
+# these to discover the tools registered on the shared ``mcp`` instance above.
+
+
+def register_all_tools() -> None:
+    """Ensure all MCP tools are registered on the shared ``mcp`` instance.
+
+    Tools register themselves via the module-level imports above when this
+    module is imported, so this is an idempotent no-op kept as a stable entry
+    point for the AI Assistant.
+    """
+    logger.debug("MCP tools registered on instance (id: %s)", id(mcp))
+
+
+def _run_coro_sync(coro: Any) -> Any:
+    """Run an async coroutine to completion from synchronous code."""
+    import asyncio  # noqa: PLC0415
+    import concurrent.futures  # noqa: PLC0415
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(lambda: asyncio.run(coro)).result()
+
+
+def get_registered_mcp_tools() -> list[Any]:
+    """Return the tool objects registered on the shared FastMCP instance.
+
+    Prefers FastMCP's public async API (``list_tools`` in 3.x, ``get_tools`` in
+    2.x). Falls back to the local provider's component registry, the same
+    structure ``assert_all_tools_protected`` inspects.
+    """
+    for method_name in ("list_tools", "get_tools"):
+        method = getattr(mcp, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            tools = _run_coro_sync(method())
+            if isinstance(tools, dict):
+                return list(tools.values())
+            if isinstance(tools, (list, tuple)):
+                return list(tools)
+        except Exception:  # noqa: BLE001 - try the next strategy
+            logger.exception("mcp.%s() failed; trying fallback", method_name)
+
+    components = getattr(getattr(mcp, "local_provider", None), "_components", None)
+    if isinstance(components, dict):
+        return [c for k, c in components.items() if str(k).startswith("tool:")]
+
+    logger.error("Could not retrieve tools from FastMCP instance")
+    return []
+
+
 #: Tool names exempt from the mcp_auth_hook protection check. Adding a tool
 #: here is a security-significant choice — review carefully. Entries are tools
 #: that intentionally run without authentication; ``generate_bug_report`` is

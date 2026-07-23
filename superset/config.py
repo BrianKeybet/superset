@@ -2221,6 +2221,8 @@ PERMISSION_INSTRUCTIONS_LINK = ""
 
 # Integrate external Blueprints to the app by passing them to your
 # configuration. These blueprints will get integrated in the app
+# NOTE: AI Assistant blueprint is registered in initialization/__init__.py
+# after all dependencies are loaded
 BLUEPRINTS: list[Blueprint] = []
 
 # Provide a callable that receives a tracking_url and returns another

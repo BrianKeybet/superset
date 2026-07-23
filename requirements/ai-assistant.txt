@@ -1,0 +1,9 @@
+# AI Assistant Dependencies
+# These packages enable LLM integration with OpenAI and Anthropic
+# plus MCP (Model Context Protocol) client for Superset integration
+# Using latest stable versions with auto-resolved compatible transitive deps
+
+langchain
+langchain-openai
+langchain-anthropic
+requests
