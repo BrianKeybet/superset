@@ -56,6 +56,9 @@ import ChartTable from 'src/features/home/ChartTable';
 import SavedQueries from 'src/features/home/SavedQueries';
 import DashboardTable from 'src/features/home/DashboardTable';
 
+/*Additional AI chat interface*/
+import { AIChatPanel } from 'src/components';
+
 const extensionsRegistry = getExtensionsRegistry();
 
 interface WelcomeProps {
@@ -437,6 +440,7 @@ function Welcome({ user, addDangerToast }: WelcomeProps) {
           </>
         )}
       </WelcomeContainer>
+      <AIChatPanel floatingButton />
     </>
   );
 }

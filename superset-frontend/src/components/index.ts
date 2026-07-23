@@ -49,3 +49,11 @@ export {
   type PluginContextType,
 } from './DynamicPlugins';
 export * from './FacePile';
+export {
+  AIChatWidget,
+  ChatMessage,
+  ChatInput,
+  type Message,
+  type ChatResponse,
+} from './AIChatWidget';
+export { AIChatPanel } from './AIChatWidget/AIChatPanel';

@@ -169,6 +169,8 @@ def _setup_user_context() -> User | None:
     Returns:
         User object with roles and groups loaded, or None if no Flask context
     """
+    from sqlalchemy.orm.exc import DetachedInstanceError
+
     try:
         user = get_user_from_request()
     except RuntimeError as e:
@@ -181,9 +183,29 @@ def _setup_user_context() -> User | None:
 
     # Validate user has necessary relationships loaded
     # (Force access to ensure they're loaded if lazy)
-    user_roles = user.roles  # noqa: F841
-    if hasattr(user, "groups"):
-        user_groups = user.groups  # noqa: F841
+    # Catch DetachedInstanceError which can occur when crossing async boundaries
+    try:
+        user_roles = user.roles  # noqa: F841
+        if hasattr(user, "groups"):
+            user_groups = user.groups  # noqa: F841
+    except DetachedInstanceError as e:
+        logger.debug(
+            "User object detached from session (expected in async context): %s", e
+        )
+        # User is detached but still valid for basic operations
+        # The MCP tool decorator will still work even without eager-loaded relationships
+
+    # Merge the user into the current db session so that SQLAlchemy write
+    # operations (e.g. ChartDAO.create) don't fail with
+    # "Object already attached to session N (this is M)" errors.
+    try:
+        from superset.extensions import db
+
+        user = db.session.merge(user)
+    except Exception as merge_err:  # pylint: disable=broad-except
+        logger.debug(
+            "Could not merge user into current session (continuing): %s", merge_err
+        )
 
     g.user = user
     return user

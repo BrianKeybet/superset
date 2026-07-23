@@ -963,6 +963,22 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
             except Exception:  # pylint: disable=broad-except
                 logger.exception("blueprint registration failed")
 
+        # Register AI Assistant blueprint (optional, if langchain is available)
+        try:
+            from superset.ai_assistant import ai_assistant_bp, disable_csrf_on_registration
+
+            logger.info("Registering blueprint: %s", ai_assistant_bp.name)
+            self.superset_app.register_blueprint(ai_assistant_bp)
+            # Disable CSRF for AI endpoints (uses API auth instead)
+            disable_csrf_on_registration(self.superset_app)
+        except ImportError:
+            logger.info(
+                "AI Assistant blueprint not loaded (LangChain not installed). "
+                "Install with: pip install -r requirements/ai-assistant.txt"
+            )
+        except Exception:  # pylint: disable=broad-except
+            logger.exception("AI Assistant blueprint registration failed")
+
     def setup_bundle_manifest(self) -> None:
         manifest_processor.init_app(self.superset_app)
 

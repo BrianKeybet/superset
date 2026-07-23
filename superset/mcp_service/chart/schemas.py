@@ -560,12 +560,52 @@ class XYChartConfig(BaseModel):
         return self
 
 
+class BigNumberChartConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    chart_type: Literal["big_number"] = Field(
+        ...,
+        description=(
+            "Chart type discriminator - MUST be 'big_number' for big number / KPI "
+            "visualizations. Shows a single prominent metric value."
+        ),
+    )
+    metric: ColumnRef = Field(
+        ...,
+        description=(
+            "The metric to display as a big number. Must have an aggregate function "
+            "(e.g. SUM, COUNT, AVG)."
+        ),
+    )
+    viz_type: Literal["big_number_total", "big_number"] = Field(
+        "big_number_total",
+        description=(
+            "'big_number_total' shows a single total value (no trend line). "
+            "'big_number' shows a value with a trend line — requires the dataset "
+            "to have a datetime column."
+        ),
+    )
+    subheader: str | None = Field(
+        None,
+        max_length=500,
+        description="Optional subheader text shown below the big number (e.g. 'Total sales')",
+    )
+    time_column: str | None = Field(
+        None,
+        description=(
+            "Datetime column for trend line. Required when viz_type='big_number'. "
+            "Ignored for 'big_number_total'."
+        ),
+    )
+    filters: List[FilterConfig] | None = Field(None, description="Filters to apply")
+
+
 # Discriminated union entry point with custom error handling
 ChartConfig = Annotated[
-    XYChartConfig | TableChartConfig,
+    XYChartConfig | TableChartConfig | BigNumberChartConfig,
     Field(
         discriminator="chart_type",
-        description="Chart configuration - specify chart_type as 'xy' or 'table'",
+        description="Chart configuration - specify chart_type as 'xy', 'table', or 'big_number'",
     ),
 ]
 

@@ -64,6 +64,9 @@ import SyncDashboardState, {
   getDashboardContextLocalStorage,
 } from '../components/SyncDashboardState';
 
+/*Additional AI chat interface*/
+import { AIChatPanel } from 'src/components';
+
 export const DashboardPageIdContext = createContext('');
 
 const DashboardBuilder = lazy(
@@ -312,6 +315,7 @@ export const DashboardPage: FC<PageProps> = ({ idOrSlug }: PageProps) => {
       ) : (
         <Loading />
       )}
+      <AIChatPanel floatingButton />
     </>
   );
 };

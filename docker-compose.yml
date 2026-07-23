@@ -104,7 +104,12 @@ services:
     depends_on:
       superset-init:
         condition: service_completed_successfully
+      superset-mcp:
+        condition: service_healthy
     volumes: *superset-volumes
+    environment:
+      # Allow Superset container to reach MCP service via Docker service name
+      MCP_SERVICE_HOST: superset-mcp
 
   superset-websocket:
     build: ./superset-websocket
@@ -131,7 +136,8 @@ services:
 
       # Mount config file. Create your own docker/superset-websocket/config.json
       # for custom settings, then point to it here. Do not use this example in production.
-      - ./docker/superset-websocket/config.example.json:/home/superset-websocket/config.json:ro
+      # - ./docker/superset-websocket/config.example.json:/home/superset-websocket/config.json:ro
+      - ./docker/superset-websocket:/home/superset-websocket/
     environment:
       - PORT=8080
       - REDIS_HOST=redis
@@ -255,6 +261,31 @@ services:
     volumes: *superset-volumes
     healthcheck:
       test: ["CMD-SHELL", "celery inspect ping -A superset.tasks.celery_app:app -d celery@$$HOSTNAME"]
+
+  superset-mcp:
+    build:
+      <<: *common-build
+    command: ["/app/docker/docker-bootstrap.sh", "mcp"]
+    env_file:
+      - path: docker/.env # default
+        required: true
+      - path: docker/.env-local # optional override
+        required: false
+    restart: unless-stopped
+    ports:
+      - "${MCP_PORT:-5008}:5008"
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+    user: *superset-user
+    volumes: *superset-volumes
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5008/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
 volumes:
   superset_home:

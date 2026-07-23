@@ -301,6 +301,8 @@ def create_mcp_app(
 # Create default MCP instance for backward compatibility
 mcp = create_mcp_app()
 
+logger.info(f"📦 FastMCP instance created at initialization (id: {id(mcp)})")
+
 # Initialize MCP dependency injection BEFORE importing tools/prompts
 # This replaces the abstract @tool and @prompt decorators in superset_core.mcp
 # with concrete implementations that can register with the mcp instance
@@ -310,53 +312,163 @@ from superset.core.mcp.core_mcp_injection import (  # noqa: E402
 
 initialize_core_mcp_dependencies()
 
-# Import all MCP tools to register them with the mcp instance
-# NOTE: Always add new tool imports here when creating new MCP tools.
-# Tools use the @tool decorator from `superset-core` and register automatically
-# on import. Import prompts and resources to register them with the mcp instance
-# NOTE: Always add new prompt/resource imports here when creating new prompts/resources.
-# Prompts use @mcp.prompt decorators and resources use @mcp.resource decorators.
-# They register automatically on import, similar to tools.
-from superset.mcp_service.chart import (  # noqa: F401, E402
-    prompts as chart_prompts,
-    resources as chart_resources,
-)
-from superset.mcp_service.chart.tool import (  # noqa: F401, E402
-    generate_chart,
-    get_chart_data,
-    get_chart_info,
-    get_chart_preview,
-    list_charts,
-    update_chart,
-    update_chart_preview,
-)
-from superset.mcp_service.dashboard.tool import (  # noqa: F401, E402
-    add_chart_to_existing_dashboard,
-    generate_dashboard,
-    get_dashboard_info,
-    list_dashboards,
-)
-from superset.mcp_service.dataset.tool import (  # noqa: F401, E402
-    get_dataset_info,
-    list_datasets,
-)
-from superset.mcp_service.explore.tool import (  # noqa: F401, E402
-    generate_explore_link,
-)
-from superset.mcp_service.sql_lab.tool import (  # noqa: F401, E402
-    execute_sql,
-    open_sql_lab_with_context,
-)
-from superset.mcp_service.system import (  # noqa: F401, E402
-    prompts as system_prompts,
-    resources as system_resources,
-)
-from superset.mcp_service.system.tool import (  # noqa: F401, E402
-    get_instance_info,
-    get_schema,
-    health_check,
-)
 
+def register_all_tools() -> None:
+    """
+    Explicitly register all MCP tools by importing tool modules.
+    
+    This function ensures that all tool modules are imported and their
+    @tool decorators have executed, registering them with the shared
+    FastMCP instance.
+    
+    This pattern ensures the agent always sees the same instance with
+    all tools registered, avoiding race conditions or separate instances.
+    
+    IMPORTANT: This must be called AFTER the mcp instance is created
+    and BEFORE tools are accessed by the agent.
+    """
+    logger.info(f"🔧 Registering MCP tools with instance (id: {id(mcp)})")
+    
+    # Import all MCP tools to register them with the mcp instance
+    # NOTE: Always add new tool imports here when creating new MCP tools.
+    # Tools use the @tool decorator from `superset-core` and register automatically
+    # on import. Import prompts and resources to register them with the mcp instance
+    # NOTE: Always add new prompt/resource imports here when creating new prompts/resources.
+    # Prompts use @mcp.prompt decorators and resources use @mcp.resource decorators.
+    # They register automatically on import, similar to tools.
+    from superset.mcp_service.chart import (  # noqa: F401
+        prompts as chart_prompts,
+        resources as chart_resources,
+    )
+    from superset.mcp_service.chart.tool import (  # noqa: F401
+        generate_chart,
+        get_chart_data,
+        get_chart_info,
+        get_chart_preview,
+        list_charts,
+        update_chart,
+        update_chart_preview,
+    )
+    from superset.mcp_service.dashboard.tool import (  # noqa: F401
+        add_chart_to_existing_dashboard,
+        generate_dashboard,
+        get_dashboard_info,
+        list_dashboards,
+    )
+    from superset.mcp_service.dataset.tool import (  # noqa: F401
+        get_dataset_info,
+        list_datasets,
+    )
+    from superset.mcp_service.explore.tool import (  # noqa: F401
+        generate_explore_link,
+    )
+    from superset.mcp_service.sql_lab.tool import (  # noqa: F401
+        execute_sql,
+        open_sql_lab_with_context,
+    )
+    from superset.mcp_service.system import (  # noqa: F401
+        prompts as system_prompts,
+        resources as system_resources,
+    )
+    from superset.mcp_service.system.tool import (  # noqa: F401
+        get_instance_info,
+        get_schema,
+        health_check,
+    )
+    
+    logger.info("✅ MCP tools registered successfully")
+
+
+# Call register_all_tools() at module initialization to ensure
+# tools are registered when mcp_service.app is imported
+register_all_tools()
+
+
+def get_registered_mcp_tools():
+    """
+    Retrieve the list of registered MCP tools from the FastMCP instance.
+    
+    This function properly accesses FastMCP's tool registry after all tools
+    have been registered via the import statements above.
+    
+    Returns:
+        List of tool objects registered with FastMCP, or empty list if none found
+    """
+    # Ensure all tools have been imported and registered
+    # Tools are registered via @tool() decorators by the imports above
+    
+    # Try to access tools via FastMCP's methods/attributes
+    tools_list = []
+    
+    logger.info(f"🔍 [DIAGNOSTIC] Checking FastMCP instance (id: {id(mcp)})")
+    
+    # Strategy 1: Try get_tools() - the public synchronous API
+    logger.info(f"🔍 [STRATEGY 1] Trying mcp.get_tools() (public API)...")
+    if hasattr(mcp, 'get_tools') and callable(mcp.get_tools):
+        try:
+            result = mcp.get_tools()
+            logger.info(f"🔍 [STRATEGY 1] get_tools() returned type {type(result).__name__}")
+            # If it's a coroutine, don't try to use it (it's async and we can't await it here)
+            if hasattr(result, '__await__'):
+                result.close()  # Prevent "coroutine was never awaited" RuntimeWarning
+                logger.info(f"🔍 [STRATEGY 1] ✅ get_tools() returned 0 tools (async, can't use in sync context)")
+            elif result:
+                if isinstance(result, dict):
+                    tools_list = list(result.values())
+                elif isinstance(result, (list, tuple)):
+                    tools_list = list(result)
+                logger.info(f"🔍 [STRATEGY 1] ✅ get_tools() returned {len(tools_list)} tools")
+            else:
+                logger.info(f"🔍 [STRATEGY 1] get_tools() returned empty/None")
+        except Exception as e:
+            logger.info(f"🔍 [STRATEGY 1] ❌ get_tools() failed: {type(e).__name__}: {e}")
+            import traceback
+            logger.info(f"🔍 [STRATEGY 1] Traceback: {traceback.format_exc()}")
+    else:
+        logger.info(f"🔍 [STRATEGY 1] ❌ mcp.get_tools() not available")
+    
+    # Strategy 2: Try _tool_manager - internal manager might have tools
+    logger.info(f"🔍 [STRATEGY 2] Trying mcp._tool_manager...")
+    if not tools_list and hasattr(mcp, '_tool_manager'):
+        try:
+            tool_manager = mcp._tool_manager
+            logger.info(f"🔍 [STRATEGY 2] _tool_manager type: {type(tool_manager).__name__}")
+            
+            # Check for tools attribute on manager
+            if hasattr(tool_manager, 'tools'):
+                tools_attr = tool_manager.tools
+                logger.info(f"🔍 [STRATEGY 2]   tools type: {type(tools_attr).__name__}")
+                if tools_attr:
+                    tools_list = list(tools_attr.values()) if isinstance(tools_attr, dict) else list(tools_attr)
+                    logger.info(f"🔍 [STRATEGY 2] ✅ _tool_manager.tools returned {len(tools_list)} tools")
+            
+            # If no tools yet, check for _tools
+            if not tools_list and hasattr(tool_manager, '_tools'):
+                tools_attr = tool_manager._tools
+                logger.info(f"🔍 [STRATEGY 2]   _tools type: {type(tools_attr).__name__}")
+                if tools_attr:
+                    tools_list = list(tools_attr.values()) if isinstance(tools_attr, dict) else list(tools_attr)
+                    logger.info(f"🔍 [STRATEGY 2] ✅ _tool_manager._tools returned {len(tools_list)} tools")
+        except Exception as e:
+            logger.info(f"🔍 [STRATEGY 2] ❌ _tool_manager access failed: {type(e).__name__}: {e}")
+    
+    # Strategy 3: Try _mcp_server.list_tools synchronously (if available)
+    logger.info(f"🔍 [STRATEGY 3] Trying mcp._mcp_server._get_cached_tool_definition...")
+    if not tools_list and hasattr(mcp, '_mcp_server'):
+        try:
+            server = mcp._mcp_server
+            # Check _tool_cache which might have cached tools
+            if hasattr(server, '_tool_cache'):
+                tool_cache = server._tool_cache
+                logger.info(f"🔍 [STRATEGY 3] _tool_cache type: {type(tool_cache).__name__}")
+                if tool_cache:
+                    tools_list = list(tool_cache.values()) if isinstance(tool_cache, dict) else list(tool_cache)
+                    logger.info(f"🔍 [STRATEGY 3] ✅ _mcp_server._tool_cache returned {len(tools_list)} tools")
+        except Exception as e:
+            logger.info(f"🔍 [STRATEGY 3] ❌ _mcp_server._tool_cache access failed: {type(e).__name__}: {e}")
+    
+    logger.info(f"🔍 [FINAL] get_registered_mcp_tools: Found {len(tools_list)} tools from FastMCP instance (id: {id(mcp)})")
+    return tools_list
 
 def init_fastmcp_server(
     name: str | None = None,

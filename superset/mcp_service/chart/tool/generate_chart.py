@@ -58,7 +58,7 @@ async def generate_chart(  # noqa: C901
     - Set save_chart=True to permanently save the chart
     - LLM clients MUST display returned chart URL to users
     - Use numeric dataset ID or UUID (NOT schema.table_name format)
-    - MUST include chart_type in config (either 'xy' or 'table')
+    - MUST include chart_type in config: 'xy', 'table', or 'big_number'
 
     IMPORTANT: The 'chart_type' field in the config is a DISCRIMINATOR that determines
     which chart configuration schema to use. It MUST be included and MUST match the
@@ -69,6 +69,13 @@ async def generate_chart(  # noqa: C901
 
     - Use chart_type='table' for tabular visualizations
       Required fields: columns
+
+    - Use chart_type='big_number' for KPI / big number visualizations
+      Required fields: metric (must have an aggregate function)
+      Optional fields: subheader, viz_type ('big_number_total' or 'big_number'),
+      time_column (required for viz_type='big_number' with trend line)
+      Note: Do NOT use 'big_number_total' as chart_type — use chart_type='big_number'
+      with viz_type='big_number_total'
 
     Example usage for XY chart:
     ```json

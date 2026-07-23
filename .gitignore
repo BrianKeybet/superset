@@ -31,6 +31,10 @@ cover
 .DS_Store
 .eggs
 .env
+# Local docker env files holding real secrets — never commit (use docker/.env-local for overrides)
+docker/.env
+docker/.env.orig
+docker/.env-local
 .envrc
 .idea
 .roo

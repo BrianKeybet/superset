@@ -188,6 +188,26 @@ def run_server(
     # Create EventStore for session management (Redis for multi-pod, None for in-memory)
     event_store = create_event_store(event_store_config)
 
+    def health_check_wrapper(app: Any) -> Any:
+        """Wrap ASGI app with health check endpoint."""
+        async def asgi(scope: Any, receive: Any, send: Any) -> None:
+            if scope["type"] == "http" and scope["path"] == "/health":
+                # Health check endpoint
+                await send({
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [[b"content-type", b"application/json"]],
+                })
+                await send({
+                    "type": "http.response.body",
+                    "body": b'{"status":"ok"}',
+                })
+            else:
+                # Pass through to FastMCP app
+                await app(scope, receive, send)
+
+        return asgi
+
     env_key = f"FASTMCP_RUNNING_{port}"
     if not os.environ.get(env_key):
         os.environ[env_key] = "1"
@@ -202,16 +222,17 @@ def run_server(
                     event_store=event_store,
                     stateless_http=True,
                 )
+                app = health_check_wrapper(app)
                 uvicorn.run(app, host=host, port=port)
             else:
                 # Single-pod mode: Use built-in run() with in-memory sessions
                 logging.info("Running in single-pod mode with in-memory sessions")
-                mcp_instance.run(
+                app = mcp_instance.http_app(
                     transport="streamable-http",
-                    host=host,
-                    port=port,
                     stateless_http=True,
                 )
+                app = health_check_wrapper(app)
+                uvicorn.run(app, host=host, port=port)
         except Exception as e:
             logging.error("FastMCP failed: %s", e)
             os.environ.pop(env_key, None)

@@ -1,0 +1,3 @@
+Create chat history for user's previous charts
+Limit access to AI chat based on user roles, explore Feature Flag Integration
+

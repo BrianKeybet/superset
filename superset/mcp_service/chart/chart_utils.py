@@ -31,6 +31,7 @@ from superset.mcp_service.chart.schemas import (
     ColumnRef,
     TableChartConfig,
     XYChartConfig,
+    BigNumberChartConfig,
 )
 from superset.mcp_service.utils.url_utils import get_superset_base_url
 from superset.utils import json
@@ -183,7 +184,7 @@ def is_column_truly_temporal(column_name: str, dataset_id: int | str | None) -> 
 
 
 def map_config_to_form_data(
-    config: TableChartConfig | XYChartConfig,
+    config: TableChartConfig | XYChartConfig | BigNumberChartConfig,
     dataset_id: int | str | None = None,
 ) -> Dict[str, Any]:
     """Map chart config to Superset form_data."""
@@ -191,8 +192,41 @@ def map_config_to_form_data(
         return map_table_config(config)
     elif isinstance(config, XYChartConfig):
         return map_xy_config(config, dataset_id=dataset_id)
+    elif isinstance(config, BigNumberChartConfig):
+        return map_big_number_config(config)
     else:
         raise ValueError(f"Unsupported config type: {type(config)}")
+
+
+def map_big_number_config(config: BigNumberChartConfig) -> Dict[str, Any]:
+    """Map big number chart config to Superset form_data."""
+    metric_obj = create_metric_object(config.metric)
+
+    form_data: Dict[str, Any] = {
+        "viz_type": config.viz_type,
+        "metric": metric_obj,
+    }
+
+    if config.subheader:
+        form_data["subheader"] = config.subheader
+
+    if config.viz_type == "big_number" and config.time_column:
+        form_data["granularity_sqla"] = config.time_column
+
+    if config.filters:
+        form_data["adhoc_filters"] = [
+            {
+                "clause": "WHERE",
+                "expressionType": "SIMPLE",
+                "subject": f.column,
+                "operator": map_filter_operator(f.op),
+                "comparator": f.value,
+            }
+            for f in config.filters
+            if f is not None
+        ]
+
+    return form_data
 
 
 def map_table_config(config: TableChartConfig) -> Dict[str, Any]:
@@ -462,7 +496,7 @@ def map_filter_operator(op: str) -> str:
     return operator_map.get(op, op)
 
 
-def generate_chart_name(config: TableChartConfig | XYChartConfig) -> str:
+def generate_chart_name(config: TableChartConfig | XYChartConfig | BigNumberChartConfig) -> str:
     """Generate a chart name based on the configuration."""
     if isinstance(config, TableChartConfig):
         return f"Table Chart - {', '.join(col.name for col in config.columns)}"
@@ -471,6 +505,9 @@ def generate_chart_name(config: TableChartConfig | XYChartConfig) -> str:
         x_col = config.x.name
         y_cols = ", ".join(col.name for col in config.y)
         return f"{chart_type} Chart - {x_col} vs {y_cols}"
+    elif isinstance(config, BigNumberChartConfig):
+        metric_name = config.metric.label or config.metric.name
+        return f"Big Number - {metric_name}"
     else:
         return "Chart"
 
@@ -494,6 +531,8 @@ def analyze_chart_capabilities(chart: Any | None, config: Any) -> ChartCapabilit
         elif chart_type == "table":
             # Use the viz_type from config if available (table or ag-grid-table)
             viz_type = getattr(config, "viz_type", "table")
+        elif chart_type == "big_number":
+            viz_type = getattr(config, "viz_type", "big_number_total")
         else:
             viz_type = "unknown"
 

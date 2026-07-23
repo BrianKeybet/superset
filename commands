@@ -1,0 +1,48 @@
+## Build Embedded UI (Option 2)
+1. Create Flask blueprint for /api/v1/ai/chat
+2. Build React chat component
+3. Connect to LangChain agent using MCP tools
+4. Add embedding in dashboard sidebar
+
+## Implementation Checklist:
+# Backend:
+
+ 1. superset/ai_assistant/__init__.py - New blueprint
+ 2. superset/ai_assistant/agent.py - LangChain agent using MCP tools
+ 3. superset/ai_assistant/api.py - Flask endpoints
+ 4. Add to superset_config.py - LLM API keys
+# Frontend:
+
+ 1. superset-frontend/src/components/AIChatWidget.tsx - UI
+ 2. component
+ 3. Hook into dashboard layout
+ 4. Streaming response handler
+ 5. Chart rendering from AI output
+Configuration:
+
+ 1. MCP service running
+ 2. LLM provider (OpenAI/Anthropic credentials)
+ 3. Database for chat history (optional)
+
+📊 Superset MCP Tools Already Available
+Your MCP service can already:
+
+List dashboards - list_dashboards()
+List charts - list_charts()
+Execute SQL - execute_sql(query, database_id)
+Get dataset metadata - get_dataset_info(dataset_id)
+Create charts - create_chart(dataset, visualization_type, ...)
+Create dashboards - generate_dashboard(...)
+Query metadata - get_column_info(table, column)
+See: superset/mcp_service/tools/ for all available tools
+
+#Installs ai dependencies when they fail;
+docker compose exec superset pip install --no-cache-dir -r requirements/ai-assistant.txt
+
+
+docker compose build --no-cache superset superset-init superset-worker superset-worker-beat
+
+docker cp superset/ai_assistant/mcp_client.py superset-superset-1:/app/superset/ai_assistant/mcp_client.py
+
+docker cp superset/ai_assistant/agent.py superset-superset-1:/app/superset/ai_assistant/agent.py
+

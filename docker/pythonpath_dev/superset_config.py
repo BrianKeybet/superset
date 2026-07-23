@@ -24,6 +24,8 @@ import logging
 import os
 import sys
 
+logger = logging.getLogger(__name__)
+
 from celery.schedules import crontab
 from flask_caching.backends.filesystemcache import FileSystemCache
 
@@ -60,6 +62,10 @@ SQLALCHEMY_EXAMPLES_URI = os.getenv(
     ),
 )
 
+SQLALCHEMY_POOL_SIZE = 20        # Max connections per worker
+SQLALCHEMY_POOL_TIMEOUT = 45    # Seconds to wait for connection
+SQLALCHEMY_MAX_OVERFLOW = 40    # Extra connections beyond pool_size
+SQLALCHEMY_POOL_RECYCLE = 3600  # Recycle connections after 1 hour
 
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = os.getenv("REDIS_PORT", "6379")
@@ -142,3 +148,6 @@ try:
     )
 except ImportError:
     logger.info("Using default Docker config...")
+
+# Flask-AppBuilder Init Hook for custom views
+# FLASK_APP_MUTATOR = lambda app: my_custom_view_function(app)

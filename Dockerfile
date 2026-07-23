@@ -222,16 +222,22 @@ EXPOSE ${SUPERSET_PORT}
 FROM python-common AS lean
 
 # Install Python dependencies using docker/pip-install.sh
-COPY requirements/base.txt requirements/
+COPY requirements/base.txt requirements/ai-assistant.txt requirements/
 
 # Copy superset-core package needed for editable install in base.txt
 COPY superset-core superset-core
 
 RUN --mount=type=cache,target=${SUPERSET_HOME}/.cache/uv \
     /app/docker/pip-install.sh --requires-build-essential -r requirements/base.txt
+
+# Install AI Assistant dependencies (optional, skip if LangChain install fails)
+RUN --mount=type=cache,target=${SUPERSET_HOME}/.cache/uv \
+    /app/docker/pip-install.sh -r requirements/ai-assistant.txt || echo "⚠️  AI Assistant dependencies skipped (optional)"
+
 # Install the superset package
 RUN --mount=type=cache,target=${SUPERSET_HOME}/.cache/uv \
     uv pip install -e .
+
 RUN python -m compileall /app/superset
 
 USER superset
@@ -257,6 +263,11 @@ COPY superset-extensions-cli superset-extensions-cli
 # Install Python dependencies using docker/pip-install.sh
 RUN --mount=type=cache,target=${SUPERSET_HOME}/.cache/uv \
     /app/docker/pip-install.sh --requires-build-essential -r requirements/development.txt
+
+# Install AI Assistant dependencies (optional, skip if LangChain install fails)
+RUN --mount=type=cache,target=${SUPERSET_HOME}/.cache/uv \
+    /app/docker/pip-install.sh -r requirements/ai-assistant.txt || echo "⚠️  AI Assistant dependencies skipped (optional)"
+
 # Install the superset package
 RUN --mount=type=cache,target=${SUPERSET_HOME}/.cache/uv \
     uv pip install -e .
@@ -283,3 +294,5 @@ USER root
 RUN uv pip install .[duckdb]
 USER superset
 CMD ["/app/docker/entrypoints/docker-ci.sh"]
+
+
