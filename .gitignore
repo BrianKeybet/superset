@@ -141,3 +141,6 @@ PROJECT.md
 oxc-custom-build/
 *.code-workspace
 *.duckdb
+
+# Local AI-assistant scratch notes (not for commit)
+/commands

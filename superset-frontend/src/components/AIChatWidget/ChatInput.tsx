@@ -16,51 +16,61 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
+import { t } from '@apache-superset/core';
 import { styled } from '@apache-superset/core/ui';
-import { Button, Input } from 'antd';
+import { Button, Icons, Input, Tooltip } from '@superset-ui/core/components';
 
 const InputContainer = styled.div`
   display: flex;
-  gap: 8px;
+  gap: ${({ theme }) => theme.sizeUnit * 2}px;
   align-items: flex-end;
 `;
 
 const StyledInput = styled(Input.TextArea)`
   resize: none;
-  min-height: 36px !important;
-  max-height: 120px !important;
+  min-height: ${({ theme }) => theme.controlHeight}px;
+  max-height: 120px;
   && {
-    font-size: 13px;
+    font-size: ${({ theme }) => theme.fontSize}px;
+    border-radius: ${({ theme }) => theme.borderRadiusLG}px;
   }
 `;
 
 interface ChatInputProps {
   onSend: (message: string) => void;
-  disabled?: boolean;
+  onStop?: () => void;
+  loading?: boolean;
+  /** Bump this to programmatically focus the input (e.g. on drawer open). */
+  focusToken?: number;
   placeholder?: string;
 }
 
 export const ChatInput: React.FC<ChatInputProps> = ({
   onSend,
-  disabled = false,
-  placeholder = 'Type your message...',
+  onStop,
+  loading = false,
+  focusToken,
+  placeholder = t('Type your message...'),
 }) => {
   const [input, setInput] = useState('');
   const [rows, setRows] = useState(1);
-  const inputRef = useRef<any>(null);
+  const inputRef = useRef<React.ElementRef<typeof Input.TextArea>>(null);
+
+  useEffect(() => {
+    // Focus when the parent signals (drawer opened / conversation switched).
+    if (focusToken) inputRef.current?.focus();
+  }, [focusToken]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const value = e.target.value;
+    const { value } = e.target;
     setInput(value);
-
-    // Calculate rows based on line breaks
     const lineCount = value.split('\n').length;
     setRows(Math.min(lineCount, 4));
   };
 
   const handleSend = () => {
-    if (input.trim() && !disabled) {
+    if (input.trim() && !loading) {
       onSend(input);
       setInput('');
       setRows(1);
@@ -68,9 +78,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Send on Cmd/Ctrl + Enter
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Enter sends the message; Shift+Enter inserts a newline.
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
     }
@@ -82,22 +92,34 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         ref={inputRef}
         value={input}
         onChange={handleInputChange}
-        onKeyPress={handleKeyPress}
+        onKeyDown={handleKeyDown}
         placeholder={placeholder}
-        disabled={disabled}
         rows={rows}
         autoFocus
-        bordered
-        status={disabled ? 'warning' : undefined}
+        aria-label={t('Message')}
       />
-      <Button
-        type="primary"
-        onClick={handleSend}
-        disabled={disabled || !input.trim()}
-        title="Send (Ctrl+Enter)"
-      >
-        ✉️
-      </Button>
+      {loading ? (
+        <Tooltip title={t('Stop generating')}>
+          <Button
+            buttonStyle="secondary"
+            onClick={onStop}
+            aria-label={t('Stop generating')}
+            icon={<Icons.CloseOutlined />}
+          />
+        </Tooltip>
+      ) : (
+        <Tooltip title={t('Send (Enter · Shift+Enter for newline)')}>
+          <Button
+            buttonStyle="primary"
+            onClick={handleSend}
+            disabled={!input.trim()}
+            aria-label={t('Send message')}
+            icon={<Icons.SendOutlined />}
+          />
+        </Tooltip>
+      )}
     </InputContainer>
   );
 };
+
+export default ChatInput;

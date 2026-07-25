@@ -34,7 +34,7 @@ OPENAI_MODEL=gpt-4
 ```bash
 AI_LLM_PROVIDER=anthropic
 ANTHROPIC_API_KEY=sk-ant-...your-anthropic-api-key...
-ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
+ANTHROPIC_MODEL=claude-sonnet-5
 ```
 
 ### 3. Optional: Customize AI Settings
@@ -293,7 +293,7 @@ Add persistent chat history:
 | `OPENAI_API_KEY` | *(empty)* | OpenAI API key (required if provider=openai) |
 | `OPENAI_MODEL` | `gpt-4` | OpenAI model name |
 | `ANTHROPIC_API_KEY` | *(empty)* | Anthropic API key (required if provider=anthropic) |
-| `ANTHROPIC_MODEL` | `claude-3-5-sonnet-20241022` | Anthropic model name |
+| `ANTHROPIC_MODEL` | `claude-sonnet-5` | Anthropic model name |
 | `AI_TEMPERATURE` | `0.7` | LLM temperature (0-1) |
 | `AI_MAX_TOKENS` | `4096` | Max tokens per response |
 | `AI_ENABLE_STREAMING` | `true` | Enable streaming responses |

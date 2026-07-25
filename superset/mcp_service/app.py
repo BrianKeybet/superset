@@ -22,6 +22,8 @@ following the Flask application factory pattern. All tool modules should import
 mcp from here and use @mcp.tool decorators.
 """
 
+import asyncio
+import concurrent.futures
 import logging
 from typing import Any, Callable, Dict, List, Sequence, Set
 
@@ -301,7 +303,7 @@ def create_mcp_app(
 # Create default MCP instance for backward compatibility
 mcp = create_mcp_app()
 
-logger.info(f"📦 FastMCP instance created at initialization (id: {id(mcp)})")
+logger.info("📦 FastMCP instance created at initialization (id: %s)", id(mcp))
 
 # Initialize MCP dependency injection BEFORE importing tools/prompts
 # This replaces the abstract @tool and @prompt decorators in superset_core.mcp
@@ -316,24 +318,24 @@ initialize_core_mcp_dependencies()
 def register_all_tools() -> None:
     """
     Explicitly register all MCP tools by importing tool modules.
-    
+
     This function ensures that all tool modules are imported and their
     @tool decorators have executed, registering them with the shared
     FastMCP instance.
-    
+
     This pattern ensures the agent always sees the same instance with
     all tools registered, avoiding race conditions or separate instances.
-    
+
     IMPORTANT: This must be called AFTER the mcp instance is created
     and BEFORE tools are accessed by the agent.
     """
-    logger.info(f"🔧 Registering MCP tools with instance (id: {id(mcp)})")
-    
+    logger.info("🔧 Registering MCP tools with instance (id: %s)", id(mcp))
+
     # Import all MCP tools to register them with the mcp instance
     # NOTE: Always add new tool imports here when creating new MCP tools.
     # Tools use the @tool decorator from `superset-core` and register automatically
     # on import. Import prompts and resources to register them with the mcp instance
-    # NOTE: Always add new prompt/resource imports here when creating new prompts/resources.
+    # NOTE: add new prompt/resource imports here when creating them.
     # Prompts use @mcp.prompt decorators and resources use @mcp.resource decorators.
     # They register automatically on import, similar to tools.
     from superset.mcp_service.chart import (  # noqa: F401
@@ -375,7 +377,7 @@ def register_all_tools() -> None:
         get_schema,
         health_check,
     )
-    
+
     logger.info("✅ MCP tools registered successfully")
 
 
@@ -384,91 +386,54 @@ def register_all_tools() -> None:
 register_all_tools()
 
 
-def get_registered_mcp_tools():
+def _run_coro_sync(coro: Any) -> Any:
+    """Run an async coroutine to completion from synchronous code.
+
+    Uses ``asyncio.run`` when no loop is active; if a loop is already running
+    in this thread, executes the coroutine on a fresh loop in a worker thread
+    to avoid "asyncio.run() cannot be called from a running event loop".
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(lambda: asyncio.run(coro)).result()
+
+
+def get_registered_mcp_tools() -> list[Any]:
     """
     Retrieve the list of registered MCP tools from the FastMCP instance.
-    
-    This function properly accesses FastMCP's tool registry after all tools
-    have been registered via the import statements above.
-    
+
+    Uses FastMCP's supported public API (``mcp.get_tools()``), which is async,
+    driven to completion here so sync callers get the tool objects directly.
+    Falls back to the internal tool manager only if the public API is missing
+    (defensive against FastMCP version drift).
+
     Returns:
-        List of tool objects registered with FastMCP, or empty list if none found
+        List of tool objects registered with FastMCP, or empty list if none.
     """
-    # Ensure all tools have been imported and registered
-    # Tools are registered via @tool() decorators by the imports above
-    
-    # Try to access tools via FastMCP's methods/attributes
-    tools_list = []
-    
-    logger.info(f"🔍 [DIAGNOSTIC] Checking FastMCP instance (id: {id(mcp)})")
-    
-    # Strategy 1: Try get_tools() - the public synchronous API
-    logger.info(f"🔍 [STRATEGY 1] Trying mcp.get_tools() (public API)...")
-    if hasattr(mcp, 'get_tools') and callable(mcp.get_tools):
-        try:
-            result = mcp.get_tools()
-            logger.info(f"🔍 [STRATEGY 1] get_tools() returned type {type(result).__name__}")
-            # If it's a coroutine, don't try to use it (it's async and we can't await it here)
-            if hasattr(result, '__await__'):
-                result.close()  # Prevent "coroutine was never awaited" RuntimeWarning
-                logger.info(f"🔍 [STRATEGY 1] ✅ get_tools() returned 0 tools (async, can't use in sync context)")
-            elif result:
-                if isinstance(result, dict):
-                    tools_list = list(result.values())
-                elif isinstance(result, (list, tuple)):
-                    tools_list = list(result)
-                logger.info(f"🔍 [STRATEGY 1] ✅ get_tools() returned {len(tools_list)} tools")
-            else:
-                logger.info(f"🔍 [STRATEGY 1] get_tools() returned empty/None")
-        except Exception as e:
-            logger.info(f"🔍 [STRATEGY 1] ❌ get_tools() failed: {type(e).__name__}: {e}")
-            import traceback
-            logger.info(f"🔍 [STRATEGY 1] Traceback: {traceback.format_exc()}")
-    else:
-        logger.info(f"🔍 [STRATEGY 1] ❌ mcp.get_tools() not available")
-    
-    # Strategy 2: Try _tool_manager - internal manager might have tools
-    logger.info(f"🔍 [STRATEGY 2] Trying mcp._tool_manager...")
-    if not tools_list and hasattr(mcp, '_tool_manager'):
-        try:
-            tool_manager = mcp._tool_manager
-            logger.info(f"🔍 [STRATEGY 2] _tool_manager type: {type(tool_manager).__name__}")
-            
-            # Check for tools attribute on manager
-            if hasattr(tool_manager, 'tools'):
-                tools_attr = tool_manager.tools
-                logger.info(f"🔍 [STRATEGY 2]   tools type: {type(tools_attr).__name__}")
-                if tools_attr:
-                    tools_list = list(tools_attr.values()) if isinstance(tools_attr, dict) else list(tools_attr)
-                    logger.info(f"🔍 [STRATEGY 2] ✅ _tool_manager.tools returned {len(tools_list)} tools")
-            
-            # If no tools yet, check for _tools
-            if not tools_list and hasattr(tool_manager, '_tools'):
-                tools_attr = tool_manager._tools
-                logger.info(f"🔍 [STRATEGY 2]   _tools type: {type(tools_attr).__name__}")
-                if tools_attr:
-                    tools_list = list(tools_attr.values()) if isinstance(tools_attr, dict) else list(tools_attr)
-                    logger.info(f"🔍 [STRATEGY 2] ✅ _tool_manager._tools returned {len(tools_list)} tools")
-        except Exception as e:
-            logger.info(f"🔍 [STRATEGY 2] ❌ _tool_manager access failed: {type(e).__name__}: {e}")
-    
-    # Strategy 3: Try _mcp_server.list_tools synchronously (if available)
-    logger.info(f"🔍 [STRATEGY 3] Trying mcp._mcp_server._get_cached_tool_definition...")
-    if not tools_list and hasattr(mcp, '_mcp_server'):
-        try:
-            server = mcp._mcp_server
-            # Check _tool_cache which might have cached tools
-            if hasattr(server, '_tool_cache'):
-                tool_cache = server._tool_cache
-                logger.info(f"🔍 [STRATEGY 3] _tool_cache type: {type(tool_cache).__name__}")
-                if tool_cache:
-                    tools_list = list(tool_cache.values()) if isinstance(tool_cache, dict) else list(tool_cache)
-                    logger.info(f"🔍 [STRATEGY 3] ✅ _mcp_server._tool_cache returned {len(tools_list)} tools")
-        except Exception as e:
-            logger.info(f"🔍 [STRATEGY 3] ❌ _mcp_server._tool_cache access failed: {type(e).__name__}: {e}")
-    
-    logger.info(f"🔍 [FINAL] get_registered_mcp_tools: Found {len(tools_list)} tools from FastMCP instance (id: {id(mcp)})")
-    return tools_list
+    try:
+        tools = _run_coro_sync(mcp.get_tools())
+        if isinstance(tools, dict):
+            return list(tools.values())
+        if isinstance(tools, (list, tuple)):
+            return list(tools)
+    except Exception:  # noqa: BLE001 - fall back to internal manager below
+        logger.exception("mcp.get_tools() failed; falling back to tool manager")
+
+    # Fallback: read the internal tool manager if the public API is unavailable.
+    tool_manager = getattr(mcp, "_tool_manager", None)
+    registry = getattr(tool_manager, "tools", None) or getattr(
+        tool_manager, "_tools", None
+    )
+    if isinstance(registry, dict):
+        return list(registry.values())
+    if isinstance(registry, (list, tuple)):
+        return list(registry)
+    logger.error("Could not retrieve tools from FastMCP instance")
+    return []
+
 
 def init_fastmcp_server(
     name: str | None = None,

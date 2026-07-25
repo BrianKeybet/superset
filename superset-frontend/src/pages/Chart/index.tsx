@@ -17,7 +17,7 @@
  * under the License.
  */
 import { useEffect, useRef, useState } from 'react';
-import { useDispatch } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
 import { useLocation } from 'react-router-dom';
 import { t } from '@apache-superset/core';
 import {
@@ -37,11 +37,21 @@ import { getAppliedFilterValues } from 'src/dashboard/util/activeDashboardFilter
 import { getParsedExploreURLParams } from 'src/explore/exploreUtils/getParsedExploreURLParams';
 import { hydrateExplore } from 'src/explore/actions/hydrateExplore';
 import ExploreViewContainer from 'src/explore/components/ExploreViewContainer';
+import { AIChatPanel } from 'src/components';
 import { ExploreResponsePayload, SaveActionType } from 'src/explore/types';
 import { fallbackExploreInitialData } from 'src/explore/fixtures';
 import { getItem, LocalStorageKeys } from 'src/utils/localStorageHelpers';
 import { getFormDataWithDashboardContext } from 'src/explore/controlUtils/getFormDataWithDashboardContext';
 import type Chart from 'src/types/Chart';
+
+// Minimal shape of the explore Redux slice we read for AI chat context.
+interface ExploreContextState {
+  explore?: {
+    slice?: { slice_id?: number } | null;
+    form_data?: { slice_id?: number };
+    datasource?: { id?: number };
+  };
+}
 
 const isValidResult = (rv: JsonObject): boolean =>
   rv?.result?.form_data && rv?.result?.dataset;
@@ -131,6 +141,15 @@ export default function ExplorePage() {
   const isExploreInitialized = useRef(false);
   const dispatch = useDispatch();
   const location = useLocation();
+
+  // Current chart/dataset the user is viewing, for AI assistant context.
+  const chartId = useSelector<ExploreContextState, number | undefined>(
+    ({ explore }) =>
+      explore?.slice?.slice_id ?? explore?.form_data?.slice_id ?? undefined,
+  );
+  const datasetId = useSelector<ExploreContextState, number | undefined>(
+    ({ explore }) => explore?.datasource?.id,
+  );
 
   useEffect(() => {
     const exploreUrlParams = getParsedExploreURLParams(location);
@@ -226,5 +245,14 @@ export default function ExplorePage() {
   if (!isLoaded) {
     return <Loading />;
   }
-  return <ExploreViewContainer />;
+  return (
+    <>
+      <ExploreViewContainer />
+      <AIChatPanel
+        floatingButton
+        chartId={chartId || undefined}
+        datasetId={datasetId || undefined}
+      />
+    </>
+  );
 }

@@ -31,17 +31,29 @@ The agent automatically discovers and uses these tools for natural language quer
 """
 
 import logging
+import warnings
 from typing import Any
 
-from langgraph.prebuilt import create_react_agent  # noqa: E402 - langgraph re-exports this
+from langchain_core.messages import AIMessageChunk, SystemMessage
 
-import warnings
+from superset.ai_assistant.config import (
+    get_llm_cache_key,
+    get_llm_instance,
+    get_llm_provider,
+)
+from superset.ai_assistant.mcp_client import get_mcp_tools
+from superset.utils import json
+
+# langgraph emits noisy DeprecationWarnings; filter before importing it.
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="langgraph")
 
-from superset.ai_assistant.config import get_llm_instance
-from superset.ai_assistant.mcp_client import get_mcp_tools
+from langgraph.prebuilt import create_react_agent  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+# Cache compiled agents by resolved LLM config so we don't rebuild the LLM,
+# rediscover MCP tools, and recompile the LangGraph graph on every request.
+_agent_cache: dict[tuple[str, str, float, int, bool], Any] = {}
 
 # System prompt for the AI assistant using MCP tools
 SYSTEM_PROMPT = """You are a precise, tool-first AI assistant embedded in Apache Superset. Your job is to help users explore data, build charts, and manage dashboards — using only verified information retrieved from Superset's MCP tools.
@@ -179,16 +191,156 @@ OUTPUT BEHAVIOR
 - If you suspect tool misbehavior (success response but verification fails), recommend the user check Superset directly or provide a manual verification path."""
 
 
+# Maps a context id key to the MCP discovery tool that resolves it, plus a
+# human label used in the injected context block.
+_CONTEXT_INFO_TOOLS: dict[str, tuple[str, str]] = {
+    "dashboard_id": ("get_dashboard_info", "dashboard"),
+    "chart_id": ("get_chart_info", "chart"),
+    "dataset_id": ("get_dataset_info", "dataset"),
+}
+
+
+def _fetch_resource_info(tool: Any, identifier: Any) -> Any:
+    """Invoke a wrapped MCP discovery tool for a single identifier.
+
+    Returns the parsed result (dict/list) when the tool returns JSON, the raw
+    string otherwise, or None on any failure — enrichment is best-effort and
+    must never break the chat request.
+    """
+    try:
+        raw = tool.func({"identifier": identifier})
+    except Exception as e:  # noqa: BLE001 - best-effort enrichment
+        logger.debug("Context enrichment call failed for %s: %s", identifier, e)
+        return None
+    if isinstance(raw, str):
+        # The tool wrapper returns an error string (prefixed with ❌) instead of
+        # raising; treat that as "no info" so we fall back to the bare id rather
+        # than injecting an internal error message into the prompt.
+        if raw.lstrip().startswith("❌"):
+            logger.debug("Context enrichment tool error for %s: %s", identifier, raw)
+            return None
+        try:
+            return json.loads(raw)
+        except (ValueError, TypeError):
+            return raw
+    return raw
+
+
+def _build_context_block(context: dict[str, Any]) -> str:
+    """Build a compact, resolved description of what the user is viewing.
+
+    For each id present in ``context`` (dashboard/chart/dataset), calls the
+    matching in-process MCP discovery tool once and inlines a trimmed summary,
+    so the agent knows the concrete title/columns up front instead of spending
+    extra tool round-trips resolving "this dashboard". Falls back to the bare
+    id if the lookup fails or the tool is unavailable.
+    """
+    present = [
+        (key, context.get(key)) for key in _CONTEXT_INFO_TOOLS if context.get(key)
+    ]
+    if not present:
+        return ""
+
+    try:
+        tools_by_name = {tool.name: tool for tool in get_mcp_tools()}
+    except Exception as e:  # noqa: BLE001 - best-effort enrichment
+        logger.debug("Could not load MCP tools for context enrichment: %s", e)
+        tools_by_name = {}
+
+    lines = []
+    for key, identifier in present:
+        tool_name, label = _CONTEXT_INFO_TOOLS[key]
+        tool = tools_by_name.get(tool_name)
+        info = _fetch_resource_info(tool, identifier) if tool else None
+        if info is not None:
+            summary = json.dumps(info, default=str)
+            if len(summary) > 1200:
+                summary = summary[:1200] + "…(truncated)"
+            lines.append(f"- Current {label} (ID {identifier}): {summary}")
+        else:
+            lines.append(f"- Current {label}: ID {identifier}")
+
+    return "The user is currently viewing:\n" + "\n".join(lines)
+
+
+def _content_to_text(content: Any) -> str:
+    """Flatten LangChain message content into a plain string.
+
+    Anthropic responses (and some others) return ``content`` as a list of
+    content blocks (dicts with a ``text`` field, or plain strings) rather than
+    a single string. Join the text parts; fall back to ``str()`` otherwise.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                # Text blocks carry {"type": "text", "text": "..."}; skip others
+                # (e.g. tool_use) which have no user-facing text.
+                if block.get("type", "text") == "text" and "text" in block:
+                    parts.append(block["text"])
+        return "".join(parts)
+    return str(content)
+
+
+def _build_system_prompt() -> Any:
+    """Return the system prompt to attach to the agent.
+
+    For Anthropic, wrap it in a cacheable content block so the long, static
+    prompt (and the tool definitions rendered before it) are served from
+    Anthropic's prompt cache on repeat turns instead of reprocessed every time.
+    OpenAI does automatic prefix caching and rejects the ``cache_control`` key,
+    so it gets the plain string.
+    """
+    if get_llm_provider() == "anthropic":
+        return SystemMessage(
+            content=[
+                {
+                    "type": "text",
+                    "text": SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+        )
+    return SYSTEM_PROMPT
+
+
+def _build_agent(tools: list[Any]) -> Any:
+    """Construct a fresh LangGraph ReAct agent for the given tools."""
+    llm = get_llm_instance()
+    agent = create_react_agent(llm, tools or [], prompt=_build_system_prompt())
+
+    tool_names = [tool.name for tool in (tools or [])]
+    if tool_names:
+        logger.info(
+            "✅ Superset AI Agent initialized with %s MCP tools: %s%s",
+            len(tool_names),
+            ", ".join(tool_names[:5]),
+            "..." if len(tool_names) > 5 else "",
+        )
+    else:
+        logger.error(
+            "❌ WARNING: Superset AI Agent created with 0 MCP tools. "
+            "The agent will not be able to access Superset data or perform operations."
+        )
+    return agent
+
+
 def create_superset_agent(tools: list[Any] | None = None) -> Any:
     """
-    Create a LangChain agent using Superset's native MCP tools.
+    Create (or reuse) a LangChain agent using Superset's native MCP tools.
 
-    This function creates a React agent that uses tools from Superset's MCP service.
-    The MCP service must be running on localhost:5008 for tools to be available.
+    When ``tools`` is None (the normal path), the compiled agent is cached by
+    resolved LLM config and reused across requests — the LLM, MCP tools, and
+    LangGraph graph are built once per process. Passing explicit ``tools``
+    (e.g. in tests) bypasses the cache and builds a fresh agent.
 
     Args:
-        tools: Optional list of pre-configured tools. If None, tools are discovered
-               from the MCP service automatically.
+        tools: Optional list of pre-configured tools. If None, tools are
+               discovered from the (cached) MCP tool loader.
 
     Returns:
         Configured LangGraph agent instance
@@ -196,55 +348,66 @@ def create_superset_agent(tools: list[Any] | None = None) -> Any:
     Raises:
         ValueError: If LLM initialization fails (missing API keys)
     """
-    try:
-        llm = get_llm_instance()
-    except ValueError as e:
-        logger.error(f"Failed to initialize LLM: {e}")
-        raise
+    if tools is not None:
+        return _build_agent(tools)
 
-    if tools is None:
-        # Discover and load MCP tools from Superset service
-        import os
-        mcp_host = os.getenv("MCP_SERVICE_HOST", "localhost")
-        mcp_port = os.getenv("MCP_SERVICE_PORT", "5008")
-        
-        logger.info(
-            f"🔌 Discovering MCP tools from Superset MCP service at "
-            f"{mcp_host}:{mcp_port}..."
-        )
-        tools = get_mcp_tools()
-
-        if not tools:
+    key = get_llm_cache_key()
+    if key not in _agent_cache:
+        mcp_tools = get_mcp_tools()
+        if not mcp_tools:
             logger.error(
-                f"❌ No MCP tools available. Agent will run without tools, "
-                f"which severely limits capabilities.\n\n"
-                f"To fix this, ensure:\n"
-                f"  1. MCP service is running: docker compose --profile mcp up -d\n"
-                f"  2. MCP service is accessible at {mcp_host}:{mcp_port}\n"
-                f"  3. Check logs for MCP service errors\n"
-                f"  4. Verify MCP container status: docker ps | grep mcp"
+                "❌ No MCP tools available. Agent will run without tools, "
+                "which severely limits capabilities. Ensure the MCP service is "
+                "importable and its tools are registered. Not caching this agent "
+                "so a later request can retry once tools are available."
             )
-            tools = []
+            # Build (uncached) so a subsequent call retries tool discovery.
+            return _build_agent([])
+        _agent_cache[key] = _build_agent(mcp_tools)
 
-    # Create a React agent using LangGraph
-    # The agent will automatically select appropriate tools for each query
-    agent = create_react_agent(
-        llm,
-        tools or [],
-    )
+    return _agent_cache[key]
 
-    tool_names = [tool.name for tool in (tools or [])]
-    if tool_names:
-        logger.info(
-            f"✅ Superset AI Agent initialized with {len(tool_names)} MCP tools: "
-            f"{', '.join(tool_names[:5])}{'...' if len(tool_names) > 5 else ''}"
+
+def _verification_note(query: str) -> str:
+    """Return a post-write verification tip for create/mutate-style queries."""
+    if any(word in query.lower() for word in ["create", "add", "chart", "dashboard"]):
+        return (
+            "\n\n---\n⚠️  **Verification Tip**: This response indicates the "
+            "operation succeeded according to MCP tools. However, if the new "
+            "resource is not visible in Superset UI, please:\n1. Refresh the "
+            "page\n2. Check the resource list again\n3. Report any missing "
+            "resources — this may indicate a tool or API issue"
         )
-    else:
-        logger.error(
-            f"❌ WARNING: Superset AI Agent created with 0 MCP tools. "
-            f"The agent will not be able to access Superset data or perform operations."
-        )
-    return agent
+    return ""
+
+
+def _prepare_messages(
+    query: str,
+    context: dict[str, Any] | None,
+    conversation_history: Any | None,
+) -> list[Any]:
+    """Build the agent input messages for a turn.
+
+    Resolves the optional view context into the user message, records the user
+    turn in history, and prepends the (windowed) prior conversation. The system
+    prompt is supplied via the agent's `prompt`, so it is not included here.
+    Shared by both the blocking and streaming code paths to keep them in sync.
+    """
+    user_content = query
+    if context:
+        context_block = _build_context_block(context)
+        if context_block:
+            user_content = f"{query}\n\n[Context]\n{context_block}"
+
+    if conversation_history:
+        conversation_history.add_message("user", user_content)
+
+    messages: list[Any] = []
+    if conversation_history:
+        messages.extend(conversation_history.get_conversation_context())
+    messages.append({"role": "user", "content": user_content})
+    return messages
+
 
 def invoke_agent(
     query: str,
@@ -264,6 +427,7 @@ def invoke_agent(
         context: Optional dictionary with current view context:
             - dashboard_id: Current dashboard ID if user is viewing a dashboard
             - chart_id: Current chart ID if user is viewing a chart
+            - dataset_id: Current dataset ID if user is viewing a chart/explore
             - session_id: User's session ID
         conversation_history: Optional ConversationHistory instance for maintaining context
 
@@ -286,37 +450,14 @@ def invoke_agent(
     agent = create_superset_agent(tools)
 
     try:
-        # Build the user message with optional context
-        user_content = query
-        if context:
-            context_parts = []
-            if context.get("dashboard_id"):
-                context_parts.append(f"Current dashboard: ID {context['dashboard_id']}")
-            if context.get("chart_id"):
-                context_parts.append(f"Current chart: ID {context['chart_id']}")
-            
-            if context_parts:
-                user_content = f"{query}\n\n[Context: {'; '.join(context_parts)}]"
-        
-        # Record user message in conversation history
-        if conversation_history:
-            conversation_history.add_message("user", user_content)
-        
-        # Build messages list with full conversation history
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        
-        # Add all previous messages from conversation history
-        if conversation_history:
-            messages.extend(conversation_history.get_conversation_context())
-        
-        # Add current user message
-        messages.append({"role": "user", "content": user_content})
-        
+        messages = _prepare_messages(query, context, conversation_history)
+
         logger.info(
-            f"Invoking agent with {len(messages)} messages "
-            f"(conversation: {conversation_history.conversation_id if conversation_history else 'none'})"
+            "Invoking agent with %s messages (conversation: %s)",
+            len(messages),
+            conversation_history.conversation_id if conversation_history else "none",
         )
-        
+
         # Invoke the agent with the user query
         # LangGraph agents expect messages in a specific format
         response = agent.invoke(
@@ -326,31 +467,33 @@ def invoke_agent(
         )
 
         # Extract the final message from the agent response
-        messages = response.get("messages", [])
-        if not messages:
+        response_messages = response.get("messages", [])
+        if not response_messages:
             final_message = "No response from agent"
         else:
             # Get the last message (agent's final response)
-            last_msg = messages[-1]
+            last_msg = response_messages[-1]
 
             # Handle different message formats (dict vs AIMessage object)
             if isinstance(last_msg, dict):
-                final_message = last_msg.get("content", "No response")
+                content = last_msg.get("content", "No response")
             else:
                 # It's an AIMessage or similar object
-                final_message = getattr(last_msg, "content", "No response")
+                content = getattr(last_msg, "content", "No response")
 
-        logger.info(f"✅ Agent query completed: {query[:60]}...")
-        
+            # Anthropic (and some providers) return content as a list of content
+            # blocks rather than a plain string — flatten it to text.
+            final_message = _content_to_text(content)
+
+        logger.info("✅ Agent query completed: %s...", query[:60])
+
         # Record assistant response in conversation history
         if conversation_history:
             conversation_history.add_message("assistant", final_message)
-        
+
         # Add verification guidance to response
-        verification_note = ""
-        if any(word in query.lower() for word in ["create", "add", "chart", "dashboard"]):
-            verification_note = "\n\n---\n⚠️  **Verification Tip**: This response indicates the operation succeeded according to MCP tools. However, if the new resource is not visible in Superset UI, please:\n1. Refresh the page\n2. Check the resource list again\n3. Report any missing resources — this may indicate a tool or API issue"
-        
+        verification_note = _verification_note(query)
+
         result = {
             "success": True,
             "response": final_message + verification_note,
@@ -360,11 +503,11 @@ def invoke_agent(
                 "message_count": len(messages),
             },
         }
-        
+
         # Include conversation ID in response for client to use in next request
         if conversation_history:
             result["conversation_id"] = conversation_history.conversation_id
-        
+
         return result
 
     except Exception as e:
@@ -376,6 +519,63 @@ def invoke_agent(
             "error": str(e),
             "metadata": {"query": query},
         }
+
+
+def invoke_agent_stream(
+    query: str,
+    context: dict[str, Any] | None = None,
+    conversation_history: Any | None = None,
+) -> Any:
+    """Stream the agent's response as it is generated.
+
+    Yields ``(event_type, payload)`` tuples so the transport layer can frame
+    them (e.g. as SSE):
+      - ("token", str)  — an incremental chunk of the assistant's answer
+      - ("done", dict)  — final event with `conversation_id` + `verification_note`
+      - ("error", str)  — an error occurred mid-stream
+
+    Mirrors `invoke_agent`'s preparation (context enrichment, history recording,
+    windowed history) but replaces the blocking `.invoke()` with LangGraph's
+    token streaming, and records the full accumulated answer at the end.
+    """
+    try:
+        agent = create_superset_agent()
+        messages = _prepare_messages(query, context, conversation_history)
+
+        logger.info(
+            "Streaming agent with %s messages (conversation: %s)",
+            len(messages),
+            conversation_history.conversation_id if conversation_history else "none",
+        )
+
+        buffer: list[str] = []
+        # stream_mode="messages" yields (message_chunk, metadata) tuples; we keep
+        # only the assistant's text chunks (tool messages / tool-call args are
+        # not AIMessageChunks or carry no text content).
+        for chunk, _metadata in agent.stream(
+            {"messages": messages}, stream_mode="messages"
+        ):
+            if not isinstance(chunk, AIMessageChunk):
+                continue
+            delta = _content_to_text(chunk.content)
+            if delta:
+                buffer.append(delta)
+                yield ("token", delta)
+
+        final_message = "".join(buffer) or "No response from agent"
+        logger.info("✅ Agent stream completed: %s...", query[:60])
+
+        if conversation_history:
+            conversation_history.add_message("assistant", final_message)
+
+        done: dict[str, Any] = {"verification_note": _verification_note(query)}
+        if conversation_history:
+            done["conversation_id"] = conversation_history.conversation_id
+        yield ("done", done)
+
+    except Exception as e:
+        logger.error("Agent stream failed: %s", str(e), exc_info=True)
+        yield ("error", str(e))
 
 
 # ========================================================================

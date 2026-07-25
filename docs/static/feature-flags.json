@@ -10,6 +10,12 @@
         "description": "Enables Table V2 (AG Grid) viz plugin"
       },
       {
+        "name": "AI_ASSISTANT",
+        "default": false,
+        "lifecycle": "development",
+        "description": "Enables the embedded AI Assistant chat widget and its /api/v1/ai endpoints. When off, the widget is hidden and the API returns 404."
+      },
+      {
         "name": "ALERT_REPORT_TABS",
         "default": false,
         "lifecycle": "development",

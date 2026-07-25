@@ -16,112 +16,166 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
+import { TextEncoder, TextDecoder } from 'util';
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  userEvent,
+} from 'spec/helpers/testing-library';
 import '@testing-library/jest-dom';
+import { SupersetClient } from '@superset-ui/core';
 import { AIChatWidget } from './AIChatWidget';
 
-// Mock fetch
-global.fetch = jest.fn();
+// The widget consumes an SSE byte stream via TextDecoder; jsdom lacks these.
+Object.assign(global, { TextEncoder, TextDecoder });
+
+// Render assistant Markdown as plain text so tests don't depend on
+// react-markdown's async ESM import; the wrapper is covered by its own concern.
+jest.mock('./MarkdownMessage', () => ({
+  MarkdownMessage: ({ content }: { content: string }) => <div>{content}</div>,
+}));
+
+// The widget streams via SupersetClient.post({ parseMethod: 'raw' }); mock it.
+const postMock = jest.fn();
+jest.spyOn(SupersetClient, 'post').mockImplementation(postMock);
 
 // Mock scrollIntoView
 Element.prototype.scrollIntoView = jest.fn();
 
+const encoder = new TextEncoder();
+
+// Build a mock streaming Response whose body yields the given SSE frames.
+const makeStreamResponse = (frames: string[], ok = true) => {
+  let i = 0;
+  return {
+    ok,
+    body: {
+      getReader: () => ({
+        read: () => {
+          if (i >= frames.length) {
+            return Promise.resolve({ done: true, value: undefined });
+          }
+          const value = encoder.encode(frames[i]);
+          i += 1;
+          return Promise.resolve({ done: false, value });
+        },
+      }),
+    },
+  };
+};
+
+const tokenFrame = (delta: string) =>
+  `event: token\ndata: ${JSON.stringify({ delta })}\n\n`;
+const doneFrame = (conversationId = 'conv-1') =>
+  `event: done\ndata: ${JSON.stringify({ conversation_id: conversationId, verification_note: '' })}\n\n`;
+const errorFrame = (error: string) =>
+  `event: error\ndata: ${JSON.stringify({ error })}\n\n`;
+
+const sendButton = () => screen.getByRole('button', { name: /send message/i });
+
 describe('AIChatWidget', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    (global.fetch as jest.Mock).mockClear();
+    postMock.mockReset();
+    // The widget persists/loads conversations from localStorage; isolate tests.
+    localStorage.clear();
   });
 
-  it('should render the chat widget', () => {
+  test('renders the chat widget header', () => {
     render(<AIChatWidget />);
     expect(screen.getByText('AI Assistant')).toBeInTheDocument();
   });
 
-  it('should display empty state initially', () => {
+  test('shows the suggested-prompt empty state initially', () => {
     render(<AIChatWidget />);
-    expect(screen.getByText(/no messages yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/ask the ai assistant/i)).toBeInTheDocument();
+    // Generic (no context) suggestion chip.
+    expect(
+      screen.getByRole('button', { name: /what dashboards do we have/i }),
+    ).toBeInTheDocument();
   });
 
-  it('should send a message and display it', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        success: true,
-        response: 'Hello! How can I help?',
-      }),
-    });
+  test('sends a suggested prompt when its chip is clicked', async () => {
+    postMock.mockResolvedValueOnce(
+      makeStreamResponse([tokenFrame('Here you go'), doneFrame()]),
+    );
+    render(<AIChatWidget />);
+    fireEvent.click(
+      screen.getByRole('button', { name: /what dashboards do we have/i }),
+    );
+    await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
+  });
 
-    const { container } = render(<AIChatWidget />);
+  test('sends a message and streams the response', async () => {
+    postMock.mockResolvedValueOnce(
+      makeStreamResponse([
+        tokenFrame('Hello! '),
+        tokenFrame('How can I help?'),
+        doneFrame(),
+      ]),
+    );
+
+    render(<AIChatWidget />);
     const input = screen.getByPlaceholderText(/ask me anything/i);
-    const sendButton = screen.getByTitle(/send/i);
 
     await userEvent.type(input, 'Hello AI');
-    fireEvent.click(sendButton);
+    fireEvent.click(sendButton());
 
     await waitFor(() => {
       expect(screen.getByText('Hello AI')).toBeInTheDocument();
     });
-
+    // Deltas accumulate into a single assistant message.
     await waitFor(() => {
       expect(screen.getByText('Hello! How can I help?')).toBeInTheDocument();
     });
   });
 
-  it('should handle API errors', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        success: false,
-        error: 'API Error',
-      }),
-    });
+  test('handles a streamed error event', async () => {
+    postMock.mockResolvedValueOnce(
+      makeStreamResponse([errorFrame('API Error')]),
+    );
 
     render(<AIChatWidget />);
     const input = screen.getByPlaceholderText(/ask me anything/i);
-    const sendButton = screen.getByTitle(/send/i);
 
     await userEvent.type(input, 'Test message');
-    fireEvent.click(sendButton);
+    fireEvent.click(sendButton());
 
     await waitFor(() => {
       expect(screen.getByText(/error: api error/i)).toBeInTheDocument();
     });
   });
 
-  it('should clear chat history', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        success: true,
-        response: 'Response',
-      }),
-    });
+  test('clears chat history', async () => {
+    postMock.mockResolvedValueOnce(
+      makeStreamResponse([tokenFrame('Response'), doneFrame()]),
+    );
 
     render(<AIChatWidget />);
     const input = screen.getByPlaceholderText(/ask me anything/i);
-    const sendButton = screen.getByTitle(/send/i);
 
     await userEvent.type(input, 'Message');
-    fireEvent.click(sendButton);
+    fireEvent.click(sendButton());
 
     await waitFor(() => {
       expect(screen.getByText('Message')).toBeInTheDocument();
     });
 
-    const clearButton = screen.getByTitle(/clear chat history/i);
-    fireEvent.click(clearButton);
+    fireEvent.click(
+      screen.getByRole('button', { name: /clear chat history/i }),
+    );
 
     await waitFor(() => {
       expect(screen.queryByText('Message')).not.toBeInTheDocument();
-      expect(screen.getByText(/no messages yet/i)).toBeInTheDocument();
+      expect(screen.getByText(/ask the ai assistant/i)).toBeInTheDocument();
     });
   });
 
-  it('should disable input while loading', async () => {
-    let resolveResponse: any;
-    (global.fetch as jest.Mock).mockReturnValueOnce(
+  test('shows a typing indicator and a Stop button while loading', async () => {
+    let resolveResponse: (value: unknown) => void = () => {};
+    postMock.mockReturnValueOnce(
       new Promise(resolve => {
         resolveResponse = resolve;
       }),
@@ -129,26 +183,31 @@ describe('AIChatWidget', () => {
 
     render(<AIChatWidget />);
     const input = screen.getByPlaceholderText(/ask me anything/i);
-    const sendButton = screen.getByTitle(/send/i);
 
     await userEvent.type(input, 'Message');
-    fireEvent.click(sendButton);
+    fireEvent.click(sendButton());
 
-    // Verify loading state
-    expect(screen.getByText(/ai is thinking/i)).toBeInTheDocument();
-    expect(sendButton).toBeDisabled();
+    // Loading: typing indicator + Stop button; Send is replaced.
+    expect(
+      screen.getByRole('button', { name: /stop generating/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText(/ai is thinking/i)).toBeInTheDocument();
 
-    // Resolve the response
-    resolveResponse({
-      ok: true,
-      json: async () => ({
-        success: true,
-        response: 'Response',
-      }),
-    });
+    resolveResponse(makeStreamResponse([tokenFrame('Response'), doneFrame()]));
 
     await waitFor(() => {
-      expect(screen.queryByText(/ai is thinking/i)).not.toBeInTheDocument();
+      expect(
+        screen.queryByLabelText(/ai is thinking/i),
+      ).not.toBeInTheDocument();
     });
+  });
+
+  test('calls onClose when the close button is clicked', () => {
+    const onClose = jest.fn();
+    render(<AIChatWidget onClose={onClose} />);
+    fireEvent.click(
+      screen.getByRole('button', { name: /close ai assistant/i }),
+    );
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
