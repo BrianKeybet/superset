@@ -98,7 +98,7 @@ case "${1}" in
         echo "  🔒 Werkzeug debugger disabled (set SUPERSET_DEBUG_ENABLED=true to enable)"
     fi
 
-    flask run -p $PORT --reload $DEBUGGER_FLAG --host=0.0.0.0 \
+    flask run -p $PORT --reload $DEBUGGER_FLAG --with-threads --host=0.0.0.0 \
       --extra-files "/app/superset/extensions/.reload_trigger" \
       --exclude-patterns "*/node_modules/*:*/.venv/*:*/build/*:*/__pycache__/*:*/superset-frontend/*:*/superset/__init__.py"
     ;;

@@ -688,6 +688,10 @@ DEFAULT_FEATURE_FLAGS: dict[str, bool] = {
     # Enables Table V2 (AG Grid) viz plugin
     # @lifecycle: development
     "AG_GRID_TABLE_ENABLED": False,
+    # Enables the embedded AI Assistant chat widget and its /api/v1/ai endpoints.
+    # When off, the widget is hidden and the API returns 404.
+    # @lifecycle: development
+    "AI_ASSISTANT": False,
     # Enables experimental tabs UI for Alerts and Reports
     # @lifecycle: development
     "ALERT_REPORT_TABS": False,
@@ -1022,6 +1026,12 @@ DEFAULT_FEATURE_FLAGS.update(
         if re.search(r"^SUPERSET_FEATURE_\w+", k)
     }
 )
+
+
+# Role names allowed to use the AI Assistant when the AI_ASSISTANT feature flag
+# is on. An empty list means any authenticated user may use it. "Admin" always
+# has access. Example: ["Admin", "Alpha"].
+AI_ASSISTANT_ALLOWED_ROLES: list[str] = ["Admin", "Alpha"]
 
 
 # This function can be overridden to customize the name of the user agent

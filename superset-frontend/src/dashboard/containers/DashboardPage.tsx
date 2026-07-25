@@ -444,7 +444,7 @@ export const DashboardPage: FC<PageProps> = ({ idOrSlug }: PageProps) => {
       ) : (
         <Loading />
       )}
-      <AIChatPanel floatingButton />
+      <AIChatPanel floatingButton dashboardId={id || undefined} />
     </>
   );
 };

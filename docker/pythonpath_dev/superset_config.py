@@ -126,6 +126,9 @@ FEATURE_FLAGS = {
     "ENABLE_EXTENSIONS": True,
     "MOBILE_CONSUMPTION_MODE": True,
     "SEMANTIC_LAYERS": True,
+    # Enable the embedded AI Assistant chat widget in this local dev env.
+    # Upstream default is off; the endpoints 404 and the widget hides when off.
+    "AI_ASSISTANT": True,
 }
 EXTENSIONS_PATH = "/app/docker/extensions"
 ALERT_REPORTS_NOTIFICATION_DRY_RUN = True

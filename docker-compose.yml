@@ -334,7 +334,11 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:5008/health"]
       interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
+      # Grace window while the MCP server boots (loads the Superset app and
+      # registers all tools). Without this, early boot failures mark the
+      # container unhealthy and superset's service_healthy dependency gives up.
+      start_period: 90s
 
 volumes:
   superset_home:

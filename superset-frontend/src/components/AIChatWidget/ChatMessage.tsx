@@ -17,68 +17,107 @@
  * under the License.
  */
 import React, { useState } from 'react';
+import { t } from '@apache-superset/core';
 import { styled } from '@apache-superset/core/ui';
-import { Button, Tooltip, message as antMessage } from 'antd';
-import { CopyOutlined, CheckOutlined } from '@ant-design/icons';
+import { Button, Icons, Tooltip } from '@superset-ui/core/components';
 import type { Message } from './types';
+import { MarkdownMessage } from './MarkdownMessage';
 
-const MessageBubble = styled.div<{ role: 'user' | 'assistant' }>`
+const Row = styled.div<{ messageRole: 'user' | 'assistant' }>`
   display: flex;
-  align-self: ${props => (props.role === 'user' ? 'flex-end' : 'flex-start')};
-  max-width: 80%;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: ${props => (props.role === 'user' ? '#e6f7ff' : '#f5f5f5')};
-  color: ${props => (props.role === 'user' ? '#0050b3' : '#000000')};
-  font-size: 13px;
-  line-height: 1.5;
-  word-wrap: break-word;
-  white-space: pre-wrap;
-`;
-
-const ErrorBubble = styled(MessageBubble)`
-  background: #fff1f0;
-  color: #d4380d;
-`;
-
-const MessageTime = styled.span`
-  font-size: 11px;
-  color: #666666;
-  opacity: 0.7;
-`;
-
-const MessageWrapper = styled.div<{ role: 'user' | 'assistant' }>`
-  display: flex;
-  gap: 8px;
+  flex-direction: ${({ messageRole: role }) =>
+    role === 'user' ? 'row-reverse' : 'row'};
   align-items: flex-start;
-  align-self: ${props => (props.role === 'user' ? 'flex-end' : 'flex-start')};
-`;
+  gap: ${({ theme }) => theme.sizeUnit * 2}px;
 
-const MessageContentWrapper = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  flex: 1;
-`;
-
-const CopyButton = styled(Button)`
-  opacity: 1;
-  transition: opacity 0.2s ease-in-out;
-  padding: 4px 8px;
-  height: auto;
-  font-size: 12px;
-  
-  &:hover {
+  /* Reveal the copy action on row hover (plain class selector — avoids emotion
+     component selectors, which need @emotion/babel-plugin). */
+  &:hover .ai-chat-copy {
     opacity: 1;
   }
 `;
 
-const MessageBubbleWrapper = styled.div`
+const Avatar = styled.div<{ messageRole: 'user' | 'assistant' }>`
+  flex: 0 0 auto;
+  width: ${({ theme }) => theme.sizeUnit * 7}px;
+  height: ${({ theme }) => theme.sizeUnit * 7}px;
+  border-radius: 50%;
   display: flex;
-  align-items: flex-end;
-  gap: 4px;
-  
-  &:hover button {
+  align-items: center;
+  justify-content: center;
+  font-size: ${({ theme }) => theme.fontSizeLG}px;
+  background: ${({ theme, messageRole: role }) =>
+    role === 'user' ? theme.colorPrimary : theme.colorPrimaryBg};
+  color: ${({ theme, messageRole: role }) =>
+    role === 'user' ? theme.colorTextLightSolid : theme.colorPrimary};
+`;
+
+const Column = styled.div<{ messageRole: 'user' | 'assistant' }>`
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-width: 85%;
+  gap: ${({ theme }) => theme.sizeUnit}px;
+  align-items: ${({ messageRole: role }) =>
+    role === 'user' ? 'flex-end' : 'flex-start'};
+`;
+
+const Bubble = styled.div<{
+  messageRole: 'user' | 'assistant';
+  isError?: boolean;
+}>`
+  ${({ theme, messageRole: role, isError }) => `
+    max-width: 100%;
+    padding: ${theme.sizeUnit * 2}px ${theme.sizeUnit * 3}px;
+    border-radius: ${theme.borderRadiusLG}px;
+    font-size: ${theme.fontSize}px;
+    line-height: ${theme.lineHeight};
+    background: ${
+      isError
+        ? theme.colorErrorBg
+        : role === 'user'
+          ? theme.colorPrimary
+          : theme.colorBgElevated
+    };
+    color: ${
+      isError
+        ? theme.colorError
+        : role === 'user'
+          ? theme.colorTextLightSolid
+          : theme.colorText
+    };
+    border: 1px solid ${
+      isError
+        ? theme.colorError
+        : role === 'user'
+          ? 'transparent'
+          : theme.colorBorder
+    };
+    ${role === 'assistant' && !isError ? `box-shadow: ${theme.boxShadowSecondary};` : ''}
+  `}
+`;
+
+const PlainText = styled.div`
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+`;
+
+const Meta = styled.div<{ messageRole: 'user' | 'assistant' }>`
+  display: flex;
+  flex-direction: ${({ messageRole: role }) =>
+    role === 'user' ? 'row-reverse' : 'row'};
+  align-items: center;
+  gap: ${({ theme }) => theme.sizeUnit}px;
+  color: ${({ theme }) => theme.colorTextTertiary};
+  font-size: ${({ theme }) => theme.fontSizeSM}px;
+`;
+
+// Copy action is revealed on hover/focus to keep the transcript clean.
+const CopyButton = styled(Button)`
+  opacity: 0;
+  transition: opacity ${({ theme }) => theme.motionDurationMid};
+  &:focus-visible {
     opacity: 1;
   }
 `;
@@ -89,7 +128,7 @@ interface ChatMessageProps {
 
 export const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
   const [copied, setCopied] = useState(false);
-  const BubbleComponent = message.isError ? ErrorBubble : MessageBubble;
+  const { role, isError, content } = message;
   const timeStr = message.timestamp.toLocaleTimeString([], {
     hour: '2-digit',
     minute: '2-digit',
@@ -97,37 +136,56 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(message.content);
+      await navigator.clipboard.writeText(content);
+      // The check icon + "Copied!" tooltip are the success feedback.
       setCopied(true);
-      antMessage.success('Copied to clipboard');
-      
-      // Reset icon after 2 seconds
       setTimeout(() => setCopied(false), 2000);
     } catch (err) {
-      antMessage.error('Failed to copy');
+      // eslint-disable-next-line no-console
+      console.error('Failed to copy message to clipboard', err);
     }
   };
 
+  // Assistant replies are Markdown; user input and errors render verbatim.
+  const renderMarkdown = role === 'assistant' && !isError;
+
   return (
-    <MessageWrapper role={message.role}>
-      <MessageContentWrapper>
-        <MessageBubbleWrapper>
-          <BubbleComponent role={message.role}>
-            {message.content}
-          </BubbleComponent>
-          {message.role === 'assistant' && (
-            <Tooltip title={copied ? 'Copied!' : 'Copy message'}>
+    <Row messageRole={role}>
+      <Avatar messageRole={role} aria-hidden>
+        {role === 'user' ? <Icons.UserOutlined /> : <Icons.RobotOutlined />}
+      </Avatar>
+      <Column messageRole={role}>
+        <Bubble messageRole={role} isError={isError}>
+          {renderMarkdown ? (
+            <MarkdownMessage content={content} />
+          ) : (
+            <PlainText>{content}</PlainText>
+          )}
+        </Bubble>
+        <Meta messageRole={role}>
+          <span>{timeStr}</span>
+          {role === 'assistant' && !!content && (
+            <Tooltip title={copied ? t('Copied!') : t('Copy message')}>
               <CopyButton
+                className="ai-chat-copy"
                 type="text"
                 size="small"
                 onClick={handleCopy}
-                icon={copied ? <CheckOutlined /> : <CopyOutlined />}
+                aria-label={t('Copy message')}
+                icon={
+                  copied ? (
+                    <Icons.CheckOutlined iconSize="s" />
+                  ) : (
+                    <Icons.CopyOutlined iconSize="s" />
+                  )
+                }
               />
             </Tooltip>
           )}
-        </MessageBubbleWrapper>
-        <MessageTime>{timeStr}</MessageTime>
-      </MessageContentWrapper>
-    </MessageWrapper>
+        </Meta>
+      </Column>
+    </Row>
   );
 };
+
+export default ChatMessage;

@@ -43,12 +43,22 @@ import {
 } from 'src/explore/exploreUtils/exploreHistory';
 import { hydrateExplore } from 'src/explore/actions/hydrateExplore';
 import ExploreViewContainer from 'src/explore/components/ExploreViewContainer';
+import { AIChatPanel } from 'src/components';
 import { ExploreResponsePayload, SaveActionType } from 'src/explore/types';
 import { fallbackExploreInitialData } from 'src/explore/fixtures';
 import { getItem, LocalStorageKeys } from 'src/utils/localStorageHelpers';
 import { getFormDataWithDashboardContext } from 'src/explore/controlUtils/getFormDataWithDashboardContext';
 import type Chart from 'src/types/Chart';
 import { mapSubjectValuesToIds } from 'src/features/subjects/SubjectPicker';
+
+// Minimal shape of the explore Redux slice we read for AI chat context.
+interface ExploreContextState {
+  explore?: {
+    slice?: { slice_id?: number } | null;
+    form_data?: { slice_id?: number };
+    datasource?: { id?: number };
+  };
+}
 
 const isValidResult = (rv: JsonObject): boolean =>
   rv?.result?.form_data && rv?.result?.dataset;
@@ -149,6 +159,15 @@ export default function ExplorePage() {
   const dispatch = useDispatch();
   const history = useHistory();
   const restoreTarget = useSelector(selectRestoreTarget, shallowEqual);
+
+  // Current chart/dataset the user is viewing, for AI assistant context.
+  const chartId = useSelector<ExploreContextState, number | undefined>(
+    ({ explore }) =>
+      explore?.slice?.slice_id ?? explore?.form_data?.slice_id ?? undefined,
+  );
+  const datasetId = useSelector<ExploreContextState, number | undefined>(
+    ({ explore }) => explore?.datasource?.id,
+  );
 
   const loadExploreData = useCallback(
     (
@@ -379,5 +398,14 @@ export default function ExplorePage() {
   if (!isLoaded) {
     return <Loading />;
   }
-  return <ExploreViewContainer />;
+  return (
+    <>
+      <ExploreViewContainer />
+      <AIChatPanel
+        floatingButton
+        chartId={chartId || undefined}
+        datasetId={datasetId || undefined}
+      />
+    </>
+  );
 }

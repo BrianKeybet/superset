@@ -16,27 +16,31 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { styled } from '@apache-superset/core/ui';
-import { Button, Drawer } from 'antd';
+import { FeatureFlag, isFeatureEnabled } from '@superset-ui/core';
+import { Button, Drawer, Icons } from '@superset-ui/core/components';
 import { AIChatWidget } from './AIChatWidget';
 
 const FloatingButton = styled(Button)`
-  position: fixed;
-  bottom: 24px;
-  right: 24px;
-  border-radius: 50%;
-  width: 56px;
-  height: 56px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  z-index: 1000;
-  
-  &:hover {
-    transform: scale(1.1);
-  }
+  ${({ theme }) => `
+    position: fixed;
+    bottom: ${theme.sizeUnit * 6}px;
+    right: ${theme.sizeUnit * 6}px;
+    width: ${theme.sizeUnit * 14}px;
+    height: ${theme.sizeUnit * 14}px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: ${theme.fontSizeXL}px;
+    box-shadow: ${theme.boxShadow};
+    z-index: ${theme.zIndexPopupBase};
+    transition: transform ${theme.motionDurationMid};
+
+    &:hover {
+      transform: scale(1.08);
+    }
+  `}
 `;
 
 interface AIChatPanelProps {
@@ -57,6 +61,10 @@ interface AIChatPanelProps {
    */
   chartId?: string | number;
   /**
+   * Current dataset ID for context
+   */
+  datasetId?: string | number;
+  /**
    * Callback when chat widget is closed
    */
   onClose?: () => void;
@@ -76,9 +84,27 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
   drawerWidth = 400,
   dashboardId,
   chartId,
+  datasetId,
   onClose,
 }) => {
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [viewportWidth, setViewportWidth] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth : drawerWidth,
+  );
+
+  // Track viewport width so the drawer goes full-width on small screens.
+  useEffect(() => {
+    const onResize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  // Gate the whole widget behind the AI_ASSISTANT feature flag. The backend
+  // enforces the same flag (plus auth/RBAC) on /api/v1/ai, so this only hides
+  // the UI — it is not the security boundary.
+  if (!isFeatureEnabled(FeatureFlag.AiAssistant)) {
+    return null;
+  }
 
   const handleClose = () => {
     setDrawerOpen(false);
@@ -89,28 +115,32 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
     return (
       <>
         <FloatingButton
-          type="primary"
-          size="large"
+          buttonStyle="primary"
+          shape="circle"
           onClick={() => setDrawerOpen(true)}
-          title="Open AI Assistant"
-        >
-          💬
-        </FloatingButton>
+          aria-label="Open AI Assistant"
+          icon={<Icons.CommentOutlined iconSize="l" />}
+        />
         <Drawer
-          title="AI Assistant"
+          // Single header: the widget renders its own header, so suppress the
+          // Drawer's built-in title bar + close icon to avoid a duplicate.
+          closable={false}
           placement="right"
           onClose={handleClose}
           open={drawerOpen}
-          width={drawerWidth}
-          destroyOnClose
-          bodyStyle={{ padding: 0, display: 'flex', flexDirection: 'column' }}
-          contentWrapperStyle={{ display: 'flex' }}
-          style={{ display: 'flex' }}
+          width={Math.min(drawerWidth, viewportWidth)}
+          // Esc + mask click still close (onClose above); keep the widget mounted
+          // when closed so the conversation isn't reset on close/reopen.
+          styles={{
+            body: { padding: 0, display: 'flex', flexDirection: 'column' },
+          }}
         >
-          <AIChatWidget 
+          <AIChatWidget
             onClose={handleClose}
+            open={drawerOpen}
             dashboardId={dashboardId}
             chartId={chartId}
+            datasetId={datasetId}
           />
         </Drawer>
       </>
@@ -118,9 +148,10 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
   }
 
   return (
-    <AIChatWidget 
+    <AIChatWidget
       dashboardId={dashboardId}
       chartId={chartId}
+      datasetId={datasetId}
       onClose={onClose}
     />
   );

@@ -16,7 +16,7 @@
 #
 """Superset AI Assistant module."""
 
-from flask import Blueprint, current_app
+from flask import Blueprint, Flask
 
 ai_assistant_bp = Blueprint(
     "ai_assistant",
@@ -29,7 +29,7 @@ ai_assistant_bp = Blueprint(
 ai_assistant_bp.config = {"session.cookie_csrf_enabled": False}
 
 
-def disable_csrf_on_registration(app):
+def disable_csrf_on_registration(app: Flask) -> None:
     """Disable CSRF for AI Assistant routes."""
     for rule in app.url_map.iter_rules():
         if rule.endpoint.startswith("ai_assistant"):

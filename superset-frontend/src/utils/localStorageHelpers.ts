@@ -19,6 +19,7 @@
 
 import { TableTab } from 'src/views/CRUD/types';
 import { DashboardContextForExplore } from 'src/types/DashboardContextForExplore';
+import type { StoredConversation } from 'src/components/AIChatWidget/types';
 
 export enum LocalStorageKeys {
   /**
@@ -58,6 +59,7 @@ export enum LocalStorageKeys {
   DashboardEditorShowOnlyMyCharts = 'dashboard__editor_show_only_my_charts',
   CommonResizableSidebarWidths = 'common__resizable_sidebar_widths',
   ChatState = 'chat__state',
+  AiChatConversations = 'ai_chat__conversations',
 }
 
 export type LocalStorageValues = {
@@ -80,6 +82,7 @@ export type LocalStorageValues = {
   dashboard__editor_show_only_my_charts: boolean;
   common__resizable_sidebar_widths: Record<string, number>;
   chat__state: { open: boolean; mode: string };
+  ai_chat__conversations: Record<string, StoredConversation>;
 };
 
 /*

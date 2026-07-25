@@ -29,6 +29,28 @@ export interface ChatResponse {
   success: boolean;
   response?: string;
   error?: string;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
   conversation_id?: string;
+}
+
+// A message as persisted to localStorage (timestamp stored as epoch ms, since
+// Date does not survive JSON round-tripping).
+export interface PersistedMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: number;
+  isError?: boolean;
+}
+
+// A conversation persisted to localStorage, keyed by view context so the user
+// can keep separate threads per chart/dashboard and switch between them.
+export interface StoredConversation {
+  id: string; // client-generated local id
+  contextKey: string; // e.g. "chart:5", "dashboard:1", "global"
+  contextLabel: string; // human label, e.g. "Chart 5"
+  conversationId: string | null; // backend conversation id
+  sessionId: string;
+  messages: PersistedMessage[];
+  updatedAt: number; // epoch ms
 }
