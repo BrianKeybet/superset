@@ -451,6 +451,8 @@ hashids==1.3.1
     # via
     #   -c requirements/base-constraint.txt
     #   apache-superset
+hdbcli==2.29.27
+    # via apache-superset
 holidays==0.104
     # via
     #   -c requirements/base-constraint.txt
@@ -1067,6 +1069,8 @@ sqlalchemy==2.0.52
     #   starrocks
     #   testcontainers
     #   ydb-sqlalchemy
+sqlalchemy-hana==3.0.3
+    # via apache-superset
 sqlalchemy-bigquery==1.17.2
     # via apache-superset
 sqlalchemy-cockroachdb==2.0.4
