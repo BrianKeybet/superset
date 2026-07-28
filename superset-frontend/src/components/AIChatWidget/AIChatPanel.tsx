@@ -111,6 +111,15 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
     onClose?.();
   };
 
+  // Size the drawer to a quarter of the viewport on desktop; go full-width on
+  // small screens so the chat stays usable. `drawerWidth` acts as a floor so the
+  // panel is never uncomfortably narrow on smaller desktop windows.
+  const SMALL_SCREEN_BREAKPOINT = 768;
+  const panelWidth =
+    viewportWidth < SMALL_SCREEN_BREAKPOINT
+      ? viewportWidth
+      : Math.max(drawerWidth, Math.round(viewportWidth / 4));
+
   if (floatingButton) {
     return (
       <>
@@ -128,7 +137,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
           placement="right"
           onClose={handleClose}
           open={drawerOpen}
-          width={Math.min(drawerWidth, viewportWidth)}
+          width={panelWidth}
           // Esc + mask click still close (onClose above); keep the widget mounted
           // when closed so the conversation isn't reset on close/reopen.
           styles={{

@@ -150,16 +150,14 @@ class SupersetMCPClient:
             MCPClientError: If tool call fails
         """
         try:
-            # Log at info level for visibility
-            logger.info(
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "🔧 MCP Tool Call: %s\n"
-                "   Input: %s%s\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-                tool_name,
-                json.dumps(tool_input, default=str)[:200],
-                "..." if len(json.dumps(tool_input, default=str)) > 200 else "",
-            )
+            if logger.isEnabledFor(logging.DEBUG):
+                serialized_input = json.dumps(tool_input, default=str)
+                logger.debug(
+                    "🔧 MCP Tool Call: %s | Input: %s%s",
+                    tool_name,
+                    serialized_input[:200],
+                    "..." if len(serialized_input) > 200 else "",
+                )
 
             # ✅ CRITICAL FIX: Use direct URL construction to avoid urljoin issues
             url = f"{self.base_url}tools/{tool_name}"
@@ -179,16 +177,14 @@ class SupersetMCPClient:
 
             result = response.json()
 
-            # Log the response
-            result_str = json.dumps(result, default=str)[:300]
-            logger.info(
-                "✅ MCP Tool Result (%s):\n"
-                "   %s%s\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-                tool_name,
-                result_str,
-                "..." if len(json.dumps(result, default=str)) > 300 else "",
-            )
+            if logger.isEnabledFor(logging.DEBUG):
+                serialized_result = json.dumps(result, default=str)
+                logger.debug(
+                    "✅ MCP Tool Result (%s): %s%s",
+                    tool_name,
+                    serialized_result[:300],
+                    "..." if len(serialized_result) > 300 else "",
+                )
 
             return {
                 "content": result.get("content") or json.dumps(result),

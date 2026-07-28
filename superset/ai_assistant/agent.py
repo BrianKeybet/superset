@@ -31,6 +31,7 @@ The agent automatically discovers and uses these tools for natural language quer
 """
 
 import logging
+import time
 import warnings
 from typing import Any
 
@@ -55,140 +56,37 @@ logger = logging.getLogger(__name__)
 # rediscover MCP tools, and recompile the LangGraph graph on every request.
 _agent_cache: dict[tuple[str, str, float, int, bool], Any] = {}
 
-# System prompt for the AI assistant using MCP tools
-SYSTEM_PROMPT = """You are a precise, tool-first AI assistant embedded in Apache Superset. Your job is to help users explore data, build charts, and manage dashboards — using only verified information retrieved from Superset's MCP tools.
+# System prompt for the AI assistant using MCP tools.
+# Kept intentionally tight: every behavioral rule appears exactly once, and the
+# agent is told to work silently (no step-by-step narration). This is the long,
+# static prefix served from Anthropic's prompt cache (see _build_system_prompt).
+SYSTEM_PROMPT = """You are a precise, tool-first AI assistant embedded in Apache Superset. You help users explore data, build charts, and manage dashboards using only information verified through Superset's MCP tools.
 
-You never guess, infer, or fabricate names for tables, schemas, columns, charts, or dashboards. If you don't have confirmed data from a tool call, you say so and discover it.
+Never guess, infer, or fabricate names or identifiers for tables, schemas, columns, charts, or dashboards. If you lack tool-confirmed data, discover it or say you don't have it.
 
----
-
-OPENING GREETING
-
-At the beginning of any conversation, retrieve the current user's username by calling the appropriate system information tool (such as get_current_user_info or similar), then greet them with "Hi *username*" in your opening message. This greeting should only appear in the first message of a conversation, not in subsequent responses. For follow-up messages in an ongoing conversation, respond naturally without repeating this greeting.
-
----
+GREETING
+Greet the user by name only in your first reply of a conversation, using the name given in the request context (shown as "[User] <name>"). Never call a tool to obtain the user's identity. Do not repeat the greeting on later turns.
 
 CAPABILITIES
-
-You have access to Superset MCP tools across five domains:
-
-- Dashboard management: list, create, modify, and manage dashboard components
-- Chart operations: list, create, preview, extract data from, and configure charts
-- Dataset and schema discovery: list datasets, inspect schemas, explore columns and metrics
-- SQL Lab: execute SQL queries and generate pre-filled SQL Lab links
-- System info: instance stats, configuration, health checks, current user identity
-
----
+You have MCP tools across five domains: dashboard management (list/create/modify), chart operations (list/create/preview/extract data/configure), dataset & schema discovery (list datasets, inspect schemas, explore columns/metrics), SQL Lab (execute queries, generate pre-filled SQL Lab links), and system info (instance stats, configuration, health).
 
 CURRENT CONTEXT
+When the request includes the user's current view (a "[Context]" block with the dashboard/chart/dataset id and a resolved summary), use it: add new charts to the current dashboard, modify the referenced chart without asking which one, and resolve phrases like "this dashboard". If no context is given and the target is unclear, ask instead of guessing.
 
-The user may provide context about their current view:
-- **Current Dashboard**: If viewing a dashboard, the dashboard ID is included
-- **Current Chart**: If viewing a chart, the chart ID is included
+OPERATING RULES
+1. Discover before acting: call the relevant list_* tool (list_datasets / list_charts / list_dashboards) before referencing any resource by name.
+2. Validate before SQL: call get_dataset_info to confirm table, schema, and database before running any query — even if you think you know them.
+3. Never fabricate identifiers: use only names and ids returned by tools.
+4. On tool error, re-discover — never retry with guessed inputs. Return to the list_* tools to find the correct resource, then re-validate before proceeding.
+5. When a request is ambiguous and discovery doesn't resolve it, ask a clarifying question or present the available options.
+6. Verify mutations: after any create/update/add/delete, check the response for errors, then re-read with a read tool (list_* or get_*_info) to confirm the resource actually persisted. Never trust a write response blindly; if you cannot confirm persistence, flag it.
+7. Confirm the dataset for vague data requests: if the request doesn't identify exactly one dataset (e.g. "show me sales data", or a name that matches multiple datasets or the same name across schemas), call list_datasets, present the matches with name + schema + database, and wait for the user to choose one before querying, charting, or inspecting schema.
 
-When provided, use this context to:
-  - Suggest adding new charts directly to their current dashboard
-  - Perform chart modifications without asking which chart
-  - Reference the correct dashboard when the user says "this dashboard"
+WORKFLOW
+For each data or chart task: discover → disambiguate (Rule 7; wait for confirmation if triggered) → validate with get_*_info → execute → verify writes by re-reading → report. Don't skip or reorder steps. If discovery finds nothing useful, tell the user before proceeding.
 
-If no context is provided, ask for clarification instead of guessing.
-
----
-
-STRICT OPERATING RULES
-
-Rule 1 — Always discover before acting.
-Before referencing any resource by name, call the appropriate discovery tool first:
-- list_datasets before querying or joining any table
-- list_charts before referencing or modifying a chart
-- list_dashboards before reading or updating a dashboard
-
-Rule 2 — Always validate before executing SQL.
-Before running any SQL query, call get_dataset_info to confirm: table name, schema, and database. Do not skip this step even if you believe you know the values.
-
-Rule 3 — Never fabricate resource identifiers.
-Do not assume or invent table names, schema names, column names, chart IDs, or dashboard slugs. Use only values returned by tool calls.
-
-Rule 4 — On tool error, re-discover — do not retry with guesses.
-If a tool returns an error, do not modify the inputs and retry. Instead, return to discovery (list_* tools) to find the correct resource, then re-validate before proceeding.
-
-Rule 5 — When in doubt, ask or show options.
-If the user's request is ambiguous and discovery doesn't resolve it, either ask a clarifying question or show the user the available options from the relevant list tool.
-
-Rule 6 — Always verify mutations (creates, updates, deletes).
-When you call create_chart, update_chart, add_chart_to_dashboard, or similar write operations:
-  1. Execute the tool
-  2. Check the response for error fields or error messages
-  3. If the response indicates failure, report it immediately and do not proceed
-  4. If the response looks successful, RE-VERIFY by calling a read tool (list_charts or get_chart_info) to confirm the resource actually exists
-  5. If verification fails to find the resource, inform the user that the operation may not have persisted
-
-Do not trust create/update responses blindly. Always verify persistence.
-
-Rule 7 — Always confirm the target dataset for vague requests.
-If the user's request does not unambiguously identify a single dataset (e.g. they say "show me sales data", "chart my revenue", or "query the orders table" without specifying a schema or dataset ID), you MUST:
-  1. Call list_datasets to retrieve all available datasets
-  2. Present the list to the user in a readable format (name, schema, and database where available)
-  3. Ask the user to confirm which dataset they want to work with before proceeding
-  4. Do NOT proceed with any query, chart creation, or schema inspection until the user has explicitly confirmed the target dataset
-
-A request is considered unambiguous only if the user provides a dataset name that matches exactly one result returned by list_datasets, with no other datasets sharing that name across different schemas or databases. If there is any ambiguity — including multiple datasets with similar names or the same name in different schemas — treat the request as vague and apply this rule.
-
----
-
-DATASET DISAMBIGUATION INTERACTION PATTERN
-
-When Rule 7 is triggered, follow this exact pattern:
-
-Step 1 — Call list_datasets and retrieve results.
-Step 2 — Present the available datasets to the user. Format as a numbered list, e.g.:
-  "I found the following datasets. Which one would you like to work with?
-   1. orders — schema: public, database: production_db
-   2. orders_staging — schema: staging, database: staging_db
-   3. sales_summary — schema: reporting, database: analytics_db"
-Step 3 — Wait for the user to select a dataset by name or number.
-Step 4 — Confirm your understanding: "Got it — I'll use [dataset name] from [schema].[database]."
-Step 5 — Proceed with get_dataset_info to validate the confirmed dataset before any further action.
-
-Do not skip the confirmation in Step 4. Do not proceed to Step 5 until the user has responded.
-
----
-
-STANDARD WORKFLOW
-
-Follow this sequence for every data or chart task:
-
-1. Discover — call list_* tools to identify available resources
-2. Disambiguate — if the target dataset is not unambiguous, apply Rule 7 and wait for user confirmation before continuing
-3. Validate — call get_*_info to confirm exact names, schemas, and structure of the confirmed resource
-4. Execute — run queries, create charts, or modify dashboards using confirmed values
-5. Verify — for write operations, re-call read tools to confirm the change persisted
-6. Summarize — report what you did, what tools you used, and what the results mean
-
-Do not skip or reorder steps. If discovery returns nothing useful, report that to the user before proceeding.
-
-POST-ACTION VERIFICATION CHECKLIST
-
-After any CREATE operation, confirm:
-- Response contains no error field?
-- Response contains a valid ID or resource identifier?
-- Follow-up list_* call finds the new resource?
-- Resource properties match what was requested?
-
-If ANY check fails, investigate before reporting success to the user.
-
----
-
-OUTPUT BEHAVIOR
-
-- Begin each response by stating what you are about to do and which tool(s) you will call first.
-- After each tool call, briefly state what you found before proceeding to the next step.
-- When presenting dataset options for disambiguation, always include schema and database alongside the dataset name so the user can distinguish between similarly named datasets.
-- For write operations (create_chart, add_chart_to_dashboard, etc.), EXPLICITLY show the verification step and its result.
-- If a tool reports success but you cannot verify persistence, clearly flag this to the user with a warning.
-- End each response with a plain-language summary of the result and any relevant next steps the user might want to take.
-- If a task cannot be completed (missing permissions, empty results, ambiguous input), explain why clearly and offer a concrete recovery path.
-- If you suspect tool misbehavior (success response but verification fails), recommend the user check Superset directly or provide a manual verification path."""
+OUTPUT
+Work silently. Do not narrate tool calls, internal steps, plans, or verification — the user must never see the machinery. Respond only with what the user asked for: the result or data, a brief plain-language summary, and any relevant next step. When presenting datasets for disambiguation, include schema and database so similar names are distinguishable. If a task can't be completed (missing permissions, empty results, unresolved ambiguity) or a write can't be verified, say so plainly and offer a concrete recovery path. Use Markdown (tables, lists, bold) where it aids readability."""
 
 
 # Maps a context id key to the MCP discovery tool that resolves it, plus a
@@ -198,6 +96,34 @@ _CONTEXT_INFO_TOOLS: dict[str, tuple[str, str]] = {
     "chart_id": ("get_chart_info", "chart"),
     "dataset_id": ("get_dataset_info", "dataset"),
 }
+
+# Short-lived process cache for resolved context info, keyed by
+# (tool_name, identifier) -> (expires_at_monotonic, resolved_info). The context
+# block is now built once per conversation (first turn only), so this mainly
+# spares repeat MCP lookups when several conversations start on the same view
+# within the TTL window. Only successful lookups are cached, so failures retry.
+_CONTEXT_INFO_TTL_SECONDS = 60
+_context_info_cache: dict[tuple[str, str], tuple[float, Any]] = {}
+
+
+def _current_user_display_name() -> str | None:
+    """Best-effort human name for the current user, for a free greeting.
+
+    Lets us inject "[User] <name>" instead of forcing the model to spend a
+    get_current_user_info tool round-trip on the first turn. Never raises — the
+    greeting is cosmetic, so any failure simply means no name is injected.
+    """
+    try:
+        from flask_login import current_user
+
+        if not getattr(current_user, "is_authenticated", False):
+            return None
+        first = getattr(current_user, "first_name", None) or ""
+        last = getattr(current_user, "last_name", None) or ""
+        full = f"{first} {last}".strip()
+        return full or getattr(current_user, "username", None)
+    except Exception:  # noqa: BLE001 - greeting is best-effort
+        return None
 
 
 def _fetch_resource_info(tool: Any, identifier: Any) -> Any:
@@ -226,6 +152,23 @@ def _fetch_resource_info(tool: Any, identifier: Any) -> Any:
     return raw
 
 
+def _cached_resource_info(tool: Any, identifier: Any) -> Any:
+    """Resolve context info via the MCP tool, memoized for a short TTL.
+
+    Caches only successful lookups (see :data:`_context_info_cache`) so a
+    transient failure isn't pinned for the whole window.
+    """
+    key = (tool.name, str(identifier))
+    now = time.monotonic()
+    cached = _context_info_cache.get(key)
+    if cached is not None and cached[0] > now:
+        return cached[1]
+    info = _fetch_resource_info(tool, identifier)
+    if info is not None:
+        _context_info_cache[key] = (now + _CONTEXT_INFO_TTL_SECONDS, info)
+    return info
+
+
 def _build_context_block(context: dict[str, Any]) -> str:
     """Build a compact, resolved description of what the user is viewing.
 
@@ -251,7 +194,7 @@ def _build_context_block(context: dict[str, Any]) -> str:
     for key, identifier in present:
         tool_name, label = _CONTEXT_INFO_TOOLS[key]
         tool = tools_by_name.get(tool_name)
-        info = _fetch_resource_info(tool, identifier) if tool else None
+        info = _cached_resource_info(tool, identifier) if tool else None
         if info is not None:
             summary = json.dumps(info, default=str)
             if len(summary) > 1200:
@@ -368,17 +311,65 @@ def create_superset_agent(tools: list[Any] | None = None) -> Any:
     return _agent_cache[key]
 
 
+# Write-intent verbs that warrant a post-action verification tip. Deliberately
+# excludes bare nouns like "chart"/"dashboard" so pure reads (e.g. "what charts
+# are here?") don't get a spurious warning.
+_WRITE_INTENT_WORDS = (
+    "create",
+    "add",
+    "update",
+    "modify",
+    "change",
+    "delete",
+    "remove",
+    "rename",
+)
+
+
 def _verification_note(query: str) -> str:
-    """Return a post-write verification tip for create/mutate-style queries."""
-    if any(word in query.lower() for word in ["create", "add", "chart", "dashboard"]):
+    """Return a concise post-write verification tip for mutating queries."""
+    lowered = query.lower()
+    if any(word in lowered for word in _WRITE_INTENT_WORDS):
         return (
-            "\n\n---\n⚠️  **Verification Tip**: This response indicates the "
-            "operation succeeded according to MCP tools. However, if the new "
-            "resource is not visible in Superset UI, please:\n1. Refresh the "
-            "page\n2. Check the resource list again\n3. Report any missing "
-            "resources — this may indicate a tool or API issue"
+            "\n\n---\n⚠️ If the change isn't visible in Superset, refresh the "
+            "page and re-check; report it if it's still missing."
         )
     return ""
+
+
+def _first_turn_preamble(context: dict[str, Any] | None) -> str:
+    """Build the once-per-conversation preamble: greeting name + view context.
+
+    Injected only on the first turn (see :func:`_prepare_messages`). Both parts
+    are best-effort: the username spares a get_current_user_info round-trip, and
+    the resolved context block spares later "what is this dashboard" lookups.
+    """
+    parts: list[str] = []
+    name = _current_user_display_name()
+    if name:
+        parts.append(f"[User] {name}")
+    if context:
+        context_block = _build_context_block(context)
+        if context_block:
+            parts.append(f"[Context]\n{context_block}")
+    return "\n\n".join(parts)
+
+
+def _compact_context_line(context: dict[str, Any]) -> str:
+    """One-line current-view reminder (ids only; no MCP lookup).
+
+    Injected on follow-up turns so the agent still knows the current view after
+    the first turn's fully-resolved context block scrolls out of the replayed
+    history window. Deliberately cheap — a handful of tokens, no tool call.
+    """
+    parts = [
+        f"{label} ID {context[key]}"
+        for key, (_tool_name, label) in _CONTEXT_INFO_TOOLS.items()
+        if context.get(key)
+    ]
+    if not parts:
+        return ""
+    return "The user is currently viewing: " + ", ".join(parts)
 
 
 def _prepare_messages(
@@ -388,25 +379,38 @@ def _prepare_messages(
 ) -> list[Any]:
     """Build the agent input messages for a turn.
 
-    Resolves the optional view context into the user message, records the user
-    turn in history, and prepends the (windowed) prior conversation. The system
-    prompt is supplied via the agent's `prompt`, so it is not included here.
-    Shared by both the blocking and streaming code paths to keep them in sync.
+    On the first turn only, enriches the user message with the greeting name and
+    the resolved view context; follow-up turns skip that (the info is already in
+    the replayed history), avoiding repeated MCP lookups and duplicated tokens.
+    Records the user turn in history and prepends the (windowed) prior
+    conversation. The system prompt is supplied via the agent's `prompt`, so it
+    is not included here. Shared by the blocking and streaming paths.
     """
+    # Snapshot prior history *before* recording this turn, so the current
+    # message is appended exactly once (get_conversation_context would otherwise
+    # already include it — a double-send) and is always present even if
+    # persistence fails.
+    prior: list[Any] = (
+        conversation_history.get_conversation_context() if conversation_history else []
+    )
+    is_first_turn = not prior
+
     user_content = query
-    if context:
-        context_block = _build_context_block(context)
-        if context_block:
-            user_content = f"{query}\n\n[Context]\n{context_block}"
+    if is_first_turn:
+        # Full resolved context + greeting name, once per conversation.
+        preamble = _first_turn_preamble(context)
+        if preamble:
+            user_content = f"{query}\n\n{preamble}"
+    elif context:
+        # Cheap ids-only reminder so view-awareness survives the history window.
+        line = _compact_context_line(context)
+        if line:
+            user_content = f"{query}\n\n[Context]\n{line}"
 
     if conversation_history:
         conversation_history.add_message("user", user_content)
 
-    messages: list[Any] = []
-    if conversation_history:
-        messages.extend(conversation_history.get_conversation_context())
-    messages.append({"role": "user", "content": user_content})
-    return messages
+    return [*prior, {"role": "user", "content": user_content}]
 
 
 def invoke_agent(
