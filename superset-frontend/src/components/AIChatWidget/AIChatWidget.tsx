@@ -31,7 +31,7 @@ import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
 import { TypingIndicator } from './TypingIndicator';
 import { getSuggestedPrompts } from './suggestedPrompts';
-import type { Message, StoredConversation } from './types';
+import type { Message, StoredConversation, TraceStep } from './types';
 import {
   contextKeyOf,
   contextLabelOf,
@@ -165,6 +165,8 @@ interface AIChatWidgetProps {
   /** True when the containing drawer is open; used to focus the input. */
   open?: boolean;
   dashboardId?: string | number;
+  /** Dashboard name, shown in the header chip instead of the raw ID */
+  dashboardTitle?: string;
   chartId?: string | number;
   datasetId?: string | number;
 }
@@ -174,6 +176,7 @@ export const AIChatWidget: React.FC<AIChatWidgetProps> = ({
   onClose,
   open,
   dashboardId,
+  dashboardTitle,
   chartId,
   datasetId,
 }) => {
@@ -182,7 +185,7 @@ export const AIChatWidget: React.FC<AIChatWidgetProps> = ({
     [dashboardId, chartId, datasetId],
   );
   const contextKey = contextKeyOf(context);
-  const contextLabel = contextLabelOf(context);
+  const contextLabel = dashboardTitle ?? contextLabelOf(context);
   const hasContext = contextKey !== 'global';
 
   // Pick the initial conversation once: reuse the stored thread for this view
@@ -307,6 +310,19 @@ export const AIChatWidget: React.FC<AIChatWidgetProps> = ({
           m.id === assistantId ? { ...m, content: m.content + delta } : m,
         ),
       );
+    const upsertStep = (step: TraceStep) =>
+      setMessages(prev =>
+        prev.map(m => {
+          if (m.id !== assistantId) return m;
+          const steps = m.steps ?? [];
+          const idx = steps.findIndex(s => s.id === step.id);
+          const nextSteps =
+            idx === -1
+              ? [...steps, step]
+              : steps.map((s, i) => (i === idx ? step : s));
+          return { ...m, steps: nextSteps };
+        }),
+      );
     const markAssistantError = (errText: string) =>
       setMessages(prev =>
         prev.map(m =>
@@ -338,6 +354,20 @@ export const AIChatWidget: React.FC<AIChatWidgetProps> = ({
         if (typeof delta === 'string' && delta) {
           appendToAssistant(delta);
           streamedAny = true;
+        }
+      } else if (eventName === 'trace_step') {
+        const { id, tool, label, status } = payload;
+        if (
+          typeof id === 'string' &&
+          typeof label === 'string' &&
+          (status === 'running' || status === 'done' || status === 'error')
+        ) {
+          upsertStep({
+            id,
+            tool: typeof tool === 'string' ? tool : '',
+            label,
+            status,
+          });
         }
       } else if (eventName === 'done') {
         const cid = payload.conversation_id;
@@ -580,7 +610,7 @@ export const AIChatWidget: React.FC<AIChatWidgetProps> = ({
           <>
             {messages.map(msg =>
               msg.role === 'assistant' && !msg.content && loading ? (
-                <TypingIndicator key={msg.id} />
+                <TypingIndicator key={msg.id} steps={msg.steps} />
               ) : (
                 <ChatMessage key={msg.id} message={msg} />
               ),

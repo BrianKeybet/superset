@@ -306,6 +306,12 @@ class SupersetResultSet:
             return "INT"
         if pa.types.is_floating(pa_dtype):
             return "FLOAT"
+        if pa.types.is_decimal(pa_dtype):
+            # Drivers with native decimal support (e.g. hdbcli/SAP HANA,
+            # cx_Oracle) return `decimal.Decimal` for fixed-point columns,
+            # which pyarrow infers as decimal128/decimal256 rather than a
+            # floating type.
+            return "DECIMAL"
         if pa.types.is_string(pa_dtype):
             return "STRING"
         if pa.types.is_temporal(pa_dtype):

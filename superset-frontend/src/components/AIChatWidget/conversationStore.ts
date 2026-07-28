@@ -58,6 +58,7 @@ const toPersisted = (m: Message): PersistedMessage => ({
   content: m.content,
   timestamp: m.timestamp instanceof Date ? m.timestamp.getTime() : Date.now(),
   isError: m.isError,
+  steps: m.steps,
 });
 
 /** Revive a persisted message (numeric timestamp) into a UI Message (Date). */
@@ -67,6 +68,7 @@ export const toMessage = (m: PersistedMessage): Message => ({
   content: m.content,
   timestamp: new Date(m.timestamp),
   isError: m.isError,
+  steps: m.steps,
 });
 
 const readMap = (): Record<string, StoredConversation> =>

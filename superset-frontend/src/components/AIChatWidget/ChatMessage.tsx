@@ -22,6 +22,7 @@ import { styled } from '@apache-superset/core/ui';
 import { Button, Icons, Tooltip } from '@superset-ui/core/components';
 import type { Message } from './types';
 import { MarkdownMessage } from './MarkdownMessage';
+import { TracePanel } from './TracePanel';
 
 const Row = styled.div<{ messageRole: 'user' | 'assistant' }>`
   display: flex;
@@ -77,7 +78,7 @@ const Bubble = styled.div<{
         ? theme.colorErrorBg
         : role === 'user'
           ? theme.colorPrimary
-          : theme.colorBgElevated
+          : theme.colorBgLayout
     };
     color: ${
       isError
@@ -86,14 +87,7 @@ const Bubble = styled.div<{
           ? theme.colorTextLightSolid
           : theme.colorText
     };
-    border: 1px solid ${
-      isError
-        ? theme.colorError
-        : role === 'user'
-          ? 'transparent'
-          : theme.colorBorder
-    };
-    ${role === 'assistant' && !isError ? `box-shadow: ${theme.boxShadowSecondary};` : ''}
+    border: 1px solid ${isError ? theme.colorError : 'transparent'};
   `}
 `;
 
@@ -128,7 +122,7 @@ interface ChatMessageProps {
 
 export const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
   const [copied, setCopied] = useState(false);
-  const { role, isError, content } = message;
+  const { role, isError, content, steps } = message;
   const timeStr = message.timestamp.toLocaleTimeString([], {
     hour: '2-digit',
     minute: '2-digit',
@@ -162,6 +156,9 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
             <PlainText>{content}</PlainText>
           )}
         </Bubble>
+        {role === 'assistant' && !!steps?.length && (
+          <TracePanel steps={steps} />
+        )}
         <Meta messageRole={role}>
           <span>{timeStr}</span>
           {role === 'assistant' && !!content && (

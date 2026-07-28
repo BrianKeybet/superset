@@ -124,6 +124,8 @@ def chat_stream() -> ResponseReturnValue:
 
     Emits Server-Sent Events as the agent generates its answer:
       - `event: token` with `{"delta": "..."}` for each incremental chunk
+      - `event: trace_step` with `{"id", "tool", "label", "status": "running"|"done"|"error"}`
+        as each MCP tool call starts/finishes
       - `event: done`  with `{"conversation_id": "...", "verification_note": "..."}`
       - `event: error` with `{"error": "..."}`
 
@@ -150,6 +152,8 @@ def chat_stream() -> ResponseReturnValue:
             ):
                 if event_type == "token":
                     yield _sse("token", {"delta": payload})
+                elif event_type == "trace_step":
+                    yield _sse("trace_step", payload)
                 elif event_type == "done":
                     yield _sse("done", payload)
                 elif event_type == "error":

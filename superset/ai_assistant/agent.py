@@ -35,7 +35,7 @@ import time
 import warnings
 from typing import Any
 
-from langchain_core.messages import AIMessageChunk, SystemMessage
+from langchain_core.messages import AIMessageChunk, SystemMessage, ToolMessage
 
 from superset.ai_assistant.config import (
     get_llm_cache_key,
@@ -326,6 +326,35 @@ _WRITE_INTENT_WORDS = (
 )
 
 
+# Human-friendly status labels for MCP tools, surfaced in the streaming trace
+# (see invoke_agent_stream) instead of raw tool names. Deliberately
+# non-exhaustive: any tool not listed here still gets a readable label via
+# _tool_label's fallback humanization.
+_TOOL_FRIENDLY_LABELS: dict[str, str] = {
+    "list_charts": "Looking through your charts",
+    "list_dashboards": "Looking through your dashboards",
+    "list_datasets": "Checking available datasets",
+    "get_chart_info": "Reading chart details",
+    "get_chart_data": "Pulling chart data",
+    "get_dashboard_info": "Reading dashboard details",
+    "get_dataset_info": "Inspecting dataset schema",
+    "generate_chart": "Building the chart",
+    "update_chart": "Updating the chart",
+    "generate_dashboard": "Assembling the dashboard",
+    "execute_sql": "Running the SQL query",
+    "generate_explore_link": "Preparing a chart link",
+    "get_instance_info": "Gathering Superset info",
+    "health_check": "Checking system health",
+}
+
+
+def _tool_label(tool_name: str) -> str:
+    """Human-readable status label for a tool name, for the streaming trace."""
+    return _TOOL_FRIENDLY_LABELS.get(tool_name) or tool_name.replace(
+        "_", " "
+    ).capitalize()
+
+
 def _verification_note(query: str) -> str:
     """Return a concise post-write verification tip for mutating queries."""
     lowered = query.lower()
@@ -345,8 +374,7 @@ def _first_turn_preamble(context: dict[str, Any] | None) -> str:
     the resolved context block spares later "what is this dashboard" lookups.
     """
     parts: list[str] = []
-    name = _current_user_display_name()
-    if name:
+    if name := _current_user_display_name():
         parts.append(f"[User] {name}")
     if context:
         context_block = _build_context_block(context)
@@ -535,6 +563,10 @@ def invoke_agent_stream(
     Yields ``(event_type, payload)`` tuples so the transport layer can frame
     them (e.g. as SSE):
       - ("token", str)  — an incremental chunk of the assistant's answer
+      - ("trace_step", dict) — a tool call started/finished:
+        ``{"id", "tool", "label", "status": "running"|"done"|"error"}``.
+        Carries only a human-readable label and status, never tool
+        args/results, so it's safe to stream straight to the client.
       - ("done", dict)  — final event with `conversation_id` + `verification_note`
       - ("error", str)  — an error occurred mid-stream
 
@@ -553,18 +585,46 @@ def invoke_agent_stream(
         )
 
         buffer: list[str] = []
-        # stream_mode="messages" yields (message_chunk, metadata) tuples; we keep
-        # only the assistant's text chunks (tool messages / tool-call args are
-        # not AIMessageChunks or carry no text content).
+        # Tool-call ids we've already announced a "running" trace_step for, so
+        # a tool call's args streaming across several chunks only fires one.
+        seen_tool_calls: set[str] = set()
+        # stream_mode="messages" yields (message_chunk, metadata) tuples: text
+        # deltas arrive as AIMessageChunk, and completed tool calls arrive as
+        # ToolMessage once the tool has run.
         for chunk, _metadata in agent.stream(
             {"messages": messages}, stream_mode="messages"
         ):
-            if not isinstance(chunk, AIMessageChunk):
-                continue
-            delta = _content_to_text(chunk.content)
-            if delta:
-                buffer.append(delta)
-                yield ("token", delta)
+            if isinstance(chunk, AIMessageChunk):
+                for tool_call_chunk in chunk.tool_call_chunks or []:
+                    tc_id = tool_call_chunk.get("id")
+                    tc_name = tool_call_chunk.get("name")
+                    if tc_id and tc_name and tc_id not in seen_tool_calls:
+                        seen_tool_calls.add(tc_id)
+                        yield (
+                            "trace_step",
+                            {
+                                "id": tc_id,
+                                "tool": tc_name,
+                                "label": _tool_label(tc_name),
+                                "status": "running",
+                            },
+                        )
+                delta = _content_to_text(chunk.content)
+                if delta:
+                    buffer.append(delta)
+                    yield ("token", delta)
+            elif isinstance(chunk, ToolMessage):
+                tool_name = chunk.name or ""
+                failed = _content_to_text(chunk.content).lstrip().startswith("❌")
+                yield (
+                    "trace_step",
+                    {
+                        "id": chunk.tool_call_id,
+                        "tool": tool_name,
+                        "label": _tool_label(tool_name),
+                        "status": "error" if failed else "done",
+                    },
+                )
 
         final_message = "".join(buffer) or "No response from agent"
         logger.info("✅ Agent stream completed: %s...", query[:60])

@@ -699,16 +699,12 @@ if (isDevMode) {
     liveReload: false,
     host: devserverHost,
     port: devserverPort,
-    allowedHosts: [
-      ...new Set([
-        devserverHost,
-        'localhost',
-        '.localhost',
-        '127.0.0.1',
-        '::1',
-        '.local',
-      ]),
-    ],
+    // 'all' disables webpack-dev-server's Host header allowlist. This dev
+    // server is only ever reached through the local docker-compose nginx
+    // proxy, which can be accessed via localhost, a LAN IP, or other
+    // container-network hostnames depending on setup, so a fixed host list
+    // is too fragile.
+    allowedHosts: 'all',
     proxy: [() => proxyConfig],
     client: {
       overlay: {

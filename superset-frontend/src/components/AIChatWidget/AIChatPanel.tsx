@@ -17,30 +17,49 @@
  * under the License.
  */
 import React, { useEffect, useState } from 'react';
+import { css, keyframes } from '@emotion/react';
 import { styled } from '@apache-superset/core/ui';
-import { FeatureFlag, isFeatureEnabled } from '@superset-ui/core';
+import { addAlpha, FeatureFlag, isFeatureEnabled } from '@superset-ui/core';
 import { Button, Drawer, Icons } from '@superset-ui/core/components';
 import { AIChatWidget } from './AIChatWidget';
 
-const FloatingButton = styled(Button)`
-  ${({ theme }) => `
-    position: fixed;
-    bottom: ${theme.sizeUnit * 6}px;
-    right: ${theme.sizeUnit * 6}px;
-    width: ${theme.sizeUnit * 14}px;
-    height: ${theme.sizeUnit * 14}px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: ${theme.fontSizeXL}px;
-    box-shadow: ${theme.boxShadow};
-    z-index: ${theme.zIndexPopupBase};
-    transition: transform ${theme.motionDurationMid};
+const pulse = keyframes`
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.12); }
+`;
 
-    &:hover {
-      transform: scale(1.08);
-    }
-  `}
+const FloatingButton = styled(Button)`
+  && {
+    ${({ theme }) => {
+      const ringPulse = keyframes`
+        0% { box-shadow: ${theme.boxShadow}, 0 0 0 0 ${addAlpha(theme.colorPrimary, 0.55)}; }
+        70% { box-shadow: ${theme.boxShadow}, 0 0 0 16px ${addAlpha(theme.colorPrimary, 0)}; }
+        100% { box-shadow: ${theme.boxShadow}, 0 0 0 0 ${addAlpha(theme.colorPrimary, 0)}; }
+      `;
+      return css`
+        position: fixed;
+        bottom: ${theme.sizeUnit * 6}px;
+        right: ${theme.sizeUnit * 6}px;
+        width: ${theme.sizeUnit * 16}px;
+        height: ${theme.sizeUnit * 16}px;
+        min-width: ${theme.sizeUnit * 16}px;
+        border-radius: 50%;
+        padding: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: ${theme.fontSizeXL}px;
+        z-index: ${theme.zIndexPopupBase};
+        transition: transform ${theme.motionDurationMid};
+        animation: ${pulse} 2s ease-in-out infinite, ${ringPulse} 2s ease-out infinite;
+
+        &:hover {
+          transform: scale(1.08);
+          animation-play-state: paused;
+        }
+      `;
+    }}
+  }
 `;
 
 interface AIChatPanelProps {
@@ -56,6 +75,10 @@ interface AIChatPanelProps {
    * Current dashboard ID for context
    */
   dashboardId?: string | number;
+  /**
+   * Current dashboard name, shown in the header instead of the ID
+   */
+  dashboardTitle?: string;
   /**
    * Current chart ID for context
    */
@@ -83,6 +106,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
   floatingButton = true,
   drawerWidth = 400,
   dashboardId,
+  dashboardTitle,
   chartId,
   datasetId,
   onClose,
@@ -118,7 +142,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
   const panelWidth =
     viewportWidth < SMALL_SCREEN_BREAKPOINT
       ? viewportWidth
-      : Math.max(drawerWidth, Math.round(viewportWidth / 4));
+      : Math.max(drawerWidth, Math.round(viewportWidth / 2));
 
   if (floatingButton) {
     return (
@@ -128,7 +152,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
           shape="circle"
           onClick={() => setDrawerOpen(true)}
           aria-label="Open AI Assistant"
-          icon={<Icons.CommentOutlined iconSize="l" />}
+          icon={<Icons.CommentOutlined iconSize="xl" />}
         />
         <Drawer
           // Single header: the widget renders its own header, so suppress the
@@ -148,6 +172,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
             onClose={handleClose}
             open={drawerOpen}
             dashboardId={dashboardId}
+            dashboardTitle={dashboardTitle}
             chartId={chartId}
             datasetId={datasetId}
           />
@@ -159,6 +184,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
   return (
     <AIChatWidget
       dashboardId={dashboardId}
+      dashboardTitle={dashboardTitle}
       chartId={chartId}
       datasetId={datasetId}
       onClose={onClose}

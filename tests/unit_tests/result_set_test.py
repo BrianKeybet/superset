@@ -32,6 +32,7 @@ from superset.result_set import (
 )
 from superset.superset_typing import DbapiResult
 from superset.utils import json as superset_json
+from superset.utils.core import GenericDataType
 
 
 def test_column_names_as_bytes() -> None:
@@ -621,3 +622,21 @@ def test_empty_result_set_preserves_column_metadata() -> None:
     df = result_set.to_pandas_df()
     assert len(df) == 0
     assert list(map(str, df.columns)) == ["id", "name", "created_at"]
+
+
+def test_decimal_column_from_native_decimal_driver() -> None:
+    """
+    Drivers with native decimal support (e.g. hdbcli/SAP HANA, cx_Oracle) return
+    `decimal.Decimal` values for fixed-point columns. pyarrow infers these as
+    decimal128, which must be classified as numeric rather than falling back
+    to an unrecognized/unknown type.
+    """
+    from decimal import Decimal
+
+    data = [(Decimal("100.50"),), (Decimal("200.25"),)]
+    description = [("amount", None, None, None, None, None, None)]
+    result_set = SupersetResultSet(data, description, BaseEngineSpec)  # type: ignore
+
+    columns = result_set.columns
+    assert columns[0]["type"] == "DECIMAL"
+    assert columns[0]["type_generic"] == GenericDataType.NUMERIC
