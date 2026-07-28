@@ -27,6 +27,7 @@ from pytest_mock import MockerFixture
 from superset.db_engine_specs.base import BaseEngineSpec
 from superset.result_set import stringify_values, SupersetResultSet
 from superset.superset_typing import DbapiResult
+from superset.utils.core import GenericDataType
 
 
 def test_column_names_as_bytes() -> None:
@@ -185,3 +186,21 @@ def test_get_column_description_from_empty_data_using_cursor_description(
     )
     assert any(col.get("column_name") == "__time" for col in result_set.columns)
     logger.exception.assert_not_called()
+
+
+def test_decimal_column_from_native_decimal_driver() -> None:
+    """
+    Drivers with native decimal support (e.g. hdbcli/SAP HANA, cx_Oracle) return
+    `decimal.Decimal` values for fixed-point columns. pyarrow infers these as
+    decimal128, which must be classified as numeric rather than falling back
+    to an unrecognized/unknown type.
+    """
+    from decimal import Decimal
+
+    data = [(Decimal("100.50"),), (Decimal("200.25"),)]
+    description = [("amount", None, None, None, None, None, None)]
+    result_set = SupersetResultSet(data, description, BaseEngineSpec)  # type: ignore
+
+    columns = result_set.columns
+    assert columns[0]["type"] == "DECIMAL"
+    assert columns[0]["type_generic"] == GenericDataType.NUMERIC

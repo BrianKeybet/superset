@@ -126,25 +126,27 @@ class SchemaValidator:
             return False, ChartGenerationError(
                 error_type="missing_chart_type",
                 message="Missing required field: chart_type",
-                details="Chart configuration must specify 'chart_type' as either 'xy' "
-                "or 'table'",
+                details="Chart configuration must specify 'chart_type' as 'xy', "
+                "'table', or 'big_number'",
                 suggestions=[
                     "Add 'chart_type': 'xy' for line/bar/area/scatter charts",
                     "Add 'chart_type': 'table' for table visualizations",
+                    "Add 'chart_type': 'big_number' for KPI / big number visualizations",
                     "Example: 'config': {'chart_type': 'xy', ...}",
                 ],
                 error_code="MISSING_CHART_TYPE",
             )
 
-        if chart_type not in ["xy", "table"]:
+        if chart_type not in ["xy", "table", "big_number"]:
             return False, ChartGenerationError(
                 error_type="invalid_chart_type",
                 message=f"Invalid chart_type: '{chart_type}'",
-                details=f"Chart type '{chart_type}' is not supported. Must be 'xy' or "
-                f"'table'",
+                details=f"Chart type '{chart_type}' is not supported. Must be 'xy', "
+                f"'table', or 'big_number'",
                 suggestions=[
                     "Use 'chart_type': 'xy' for line, bar, area, or scatter charts",
                     "Use 'chart_type': 'table' for tabular data display",
+                    "Use 'chart_type': 'big_number' for KPI / big number visualizations",
                     "Check spelling and ensure lowercase",
                 ],
                 error_code="INVALID_CHART_TYPE",
@@ -155,6 +157,8 @@ class SchemaValidator:
             return SchemaValidator._pre_validate_xy_config(config)
         elif chart_type == "table":
             return SchemaValidator._pre_validate_table_config(config)
+        elif chart_type == "big_number":
+            return SchemaValidator._pre_validate_big_number_config(config)
 
         return True, None
 
@@ -238,6 +242,41 @@ class SchemaValidator:
         return True, None
 
     @staticmethod
+    def _pre_validate_big_number_config(
+        config: Dict[str, Any],
+    ) -> Tuple[bool, ChartGenerationError | None]:
+        """Pre-validate big number chart configuration."""
+        if "metric" not in config:
+            return False, ChartGenerationError(
+                error_type="missing_metric",
+                message="Big number chart missing required field: metric",
+                details="Big number charts require a 'metric' with an aggregate "
+                "function to display as the headline value",
+                suggestions=[
+                    "Add 'metric' field: {'name': 'column_name', 'aggregate': 'SUM'}",
+                    "Example: 'metric': {'name': 'revenue', 'aggregate': 'SUM'}",
+                ],
+                error_code="MISSING_METRIC",
+            )
+
+        viz_type = config.get("viz_type", "big_number_total")
+        if viz_type == "big_number" and not config.get("time_column"):
+            return False, ChartGenerationError(
+                error_type="missing_time_column",
+                message="Big number chart with a trend line requires 'time_column'",
+                details="viz_type='big_number' shows a trend line and needs a "
+                "datetime column to plot it against",
+                suggestions=[
+                    "Add 'time_column': 'your_datetime_column'",
+                    "Or use viz_type='big_number_total' for a value with no "
+                    "trend line",
+                ],
+                error_code="MISSING_TIME_COLUMN",
+            )
+
+        return True, None
+
+    @staticmethod
     def _enhance_validation_error(
         error: PydanticValidationError, request_data: Dict[str, Any]
     ) -> ChartGenerationError:
@@ -284,6 +323,22 @@ class SchemaValidator:
                             "'sales', 'aggregate': 'SUM'}]",
                         ],
                         error_code="TABLE_VALIDATION_ERROR",
+                    )
+                elif chart_type == "big_number":
+                    return ChartGenerationError(
+                        error_type="big_number_validation_error",
+                        message="Big number chart configuration validation failed",
+                        details="The big number chart configuration is missing "
+                        "required fields or has invalid structure",
+                        suggestions=[
+                            "Ensure 'metric' field exists with {'name': "
+                            "'column_name', 'aggregate': 'SUM'}",
+                            "Check that 'viz_type' is 'big_number_total' or "
+                            "'big_number'",
+                            "Add 'time_column' when viz_type='big_number' (trend "
+                            "line)",
+                        ],
+                        error_code="BIG_NUMBER_VALIDATION_ERROR",
                     )
 
         # Default enhanced error

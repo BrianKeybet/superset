@@ -20,7 +20,7 @@ from typing import Any, Optional
 from sqlalchemy import types
 
 from superset.constants import TimeGrain
-from superset.db_engine_specs.base import DatabaseCategory
+from superset.db_engine_specs.base import BaseEngineSpec, DatabaseCategory
 from superset.db_engine_specs.postgres import PostgresBaseEngineSpec
 from superset.sql.parse import LimitMethod
 
@@ -61,6 +61,14 @@ class HanaEngineSpec(PostgresBaseEngineSpec):
                    TO_DATE({col}), 1), 7, 1) as int)-1)*3 +1 as text),2,'0') ||'-01')",
         TimeGrain.YEAR: "TO_DATE(YEAR({col})||'-01-01')",
     }
+
+    @classmethod
+    def get_datatype(cls, type_code: Any) -> Optional[str]:
+        # HANA's hdbcli driver uses its own type codes, not psycopg2's OIDs,
+        # so PostgresBaseEngineSpec's psycopg2-based lookup doesn't apply here
+        # (and could coincidentally map to the wrong type). Fall back to the
+        # generic string-based handling instead.
+        return BaseEngineSpec.get_datatype(type_code)
 
     @classmethod
     def convert_dttm(

@@ -43,3 +43,19 @@ def test_convert_dttm(
     from superset.db_engine_specs.hana import HanaEngineSpec as spec  # noqa: N813
 
     assert_convert_dttm(spec, target_type, expected_result, dttm)
+
+
+def test_get_datatype_does_not_use_psycopg2_oids() -> None:
+    """
+    HanaEngineSpec inherits from PostgresBaseEngineSpec, whose `get_datatype`
+    looks up psycopg2 OID type codes. hdbcli (the HANA driver) doesn't use
+    psycopg2, so that lookup is meaningless here and must not be used -
+    otherwise a HANA type code could coincidentally collide with an unrelated
+    psycopg2 OID and report the wrong column type.
+    """
+    from superset.db_engine_specs.hana import HanaEngineSpec
+
+    # 1043 is psycopg2's OID for VARCHAR; for HANA it isn't a recognized
+    # string type code, so it must resolve to None rather than "VARCHAR".
+    assert HanaEngineSpec.get_datatype(1043) is None
+    assert HanaEngineSpec.get_datatype("decimal") == "DECIMAL"

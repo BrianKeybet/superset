@@ -16,11 +16,13 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { keyframes } from '@emotion/react';
 import { t } from '@apache-superset/core';
 import { styled } from '@apache-superset/core/ui';
 import { Icons } from '@superset-ui/core/components';
+import type { TraceStep } from './types';
+import { TracePanel } from './TracePanel';
 
 const bounce = keyframes`
   0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
@@ -66,18 +68,74 @@ const Dots = styled.div`
   }
 `;
 
+const StatusText = styled.span`
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+`;
+
+const Column = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: ${({ theme }) => theme.sizeUnit}px;
+  min-width: 0;
+`;
+
+// Generic filler shown whenever no tool is currently running (before the
+// first tool call resolves, or in any gap) — keeps the status line from ever
+// going stale even if the backend emits nothing for a while.
+const FALLBACK_MESSAGES = [
+  t('Thinking…'),
+  t('Working on it…'),
+  t('Putting it together…'),
+  t('One moment…'),
+];
+const FALLBACK_ROTATE_MS = 2800;
+
+interface TypingIndicatorProps {
+  /** Live trace of tool calls for the in-progress turn, if any. */
+  steps?: TraceStep[];
+}
+
 /** Animated "assistant is typing" indicator shown before the first token. */
-export const TypingIndicator: React.FC = () => (
-  <Wrapper role="status" aria-label={t('AI is thinking')}>
-    <Avatar aria-hidden>
-      <Icons.RobotOutlined />
-    </Avatar>
-    <Dots aria-hidden>
-      <span />
-      <span />
-      <span />
-    </Dots>
-  </Wrapper>
-);
+export const TypingIndicator: React.FC<TypingIndicatorProps> = ({
+  steps = [],
+}) => {
+  const runningStep = [...steps].reverse().find(s => s.status === 'running');
+  const [fallbackIndex, setFallbackIndex] = useState(0);
+
+  // Rotate the generic filler only while there's no backend-driven status to
+  // show; the effect re-arms whenever we fall back to it again.
+  useEffect(() => {
+    if (runningStep) return undefined;
+    const interval = setInterval(() => {
+      setFallbackIndex(i => (i + 1) % FALLBACK_MESSAGES.length);
+    }, FALLBACK_ROTATE_MS);
+    return () => clearInterval(interval);
+  }, [runningStep]);
+
+  const label = runningStep?.label ?? FALLBACK_MESSAGES[fallbackIndex];
+
+  return (
+    <Column>
+      <Wrapper
+        role="status"
+        aria-live="polite"
+        aria-label={t('AI is thinking')}
+      >
+        <Avatar aria-hidden>
+          <Icons.RobotOutlined />
+        </Avatar>
+        <Dots aria-hidden>
+          <span />
+          <span />
+          <span />
+        </Dots>
+        <StatusText>{label}</StatusText>
+      </Wrapper>
+      <TracePanel steps={steps} />
+    </Column>
+  );
+};
 
 export default TypingIndicator;

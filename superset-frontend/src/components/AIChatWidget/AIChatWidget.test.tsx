@@ -23,6 +23,7 @@ import {
   fireEvent,
   waitFor,
   userEvent,
+  act,
 } from 'spec/helpers/testing-library';
 import '@testing-library/jest-dom';
 import { SupersetClient } from '@superset-ui/core';
@@ -72,6 +73,58 @@ const doneFrame = (conversationId = 'conv-1') =>
   `event: done\ndata: ${JSON.stringify({ conversation_id: conversationId, verification_note: '' })}\n\n`;
 const errorFrame = (error: string) =>
   `event: error\ndata: ${JSON.stringify({ error })}\n\n`;
+const traceStepFrame = (
+  id: string,
+  label: string,
+  status: 'running' | 'done' | 'error',
+  tool = 'some_tool',
+) =>
+  `event: trace_step\ndata: ${JSON.stringify({ id, tool, label, status })}\n\n`;
+
+// A streaming Response whose frames are pushed in on demand, so a test can
+// assert on state between two SSE events instead of only after the stream ends.
+const makeControllableStreamResponse = () => {
+  const queue: string[] = [];
+  let pendingResolve:
+    | ((v: { done: boolean; value?: Uint8Array }) => void)
+    | null = null;
+  let ended = false;
+
+  const flush = () => {
+    if (pendingResolve && queue.length) {
+      const resolve = pendingResolve;
+      pendingResolve = null;
+      resolve({ done: false, value: encoder.encode(queue.shift() as string) });
+    } else if (pendingResolve && ended) {
+      const resolve = pendingResolve;
+      pendingResolve = null;
+      resolve({ done: true, value: undefined });
+    }
+  };
+
+  return {
+    response: {
+      ok: true,
+      body: {
+        getReader: () => ({
+          read: () =>
+            new Promise<{ done: boolean; value?: Uint8Array }>(resolve => {
+              pendingResolve = resolve;
+              flush();
+            }),
+        }),
+      },
+    },
+    push: (frame: string) => {
+      queue.push(frame);
+      flush();
+    },
+    end: () => {
+      ended = true;
+      flush();
+    },
+  };
+};
 
 const sendButton = () => screen.getByRole('button', { name: /send message/i });
 
@@ -200,6 +253,121 @@ describe('AIChatWidget', () => {
         screen.queryByLabelText(/ai is thinking/i),
       ).not.toBeInTheDocument();
     });
+  });
+
+  test('shows the running tool label before any token arrives', async () => {
+    const stream = makeControllableStreamResponse();
+    postMock.mockResolvedValueOnce(stream.response);
+
+    render(<AIChatWidget />);
+    const input = screen.getByPlaceholderText(/ask me anything/i);
+    await userEvent.type(input, 'What charts do we have?');
+    fireEvent.click(sendButton());
+
+    act(() => {
+      stream.push(
+        traceStepFrame(
+          'call_1',
+          'Looking through your charts',
+          'running',
+          'list_charts',
+        ),
+      );
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('Looking through your charts'),
+      ).toBeInTheDocument();
+    });
+
+    act(() => {
+      stream.push(
+        traceStepFrame(
+          'call_1',
+          'Looking through your charts',
+          'done',
+          'list_charts',
+        ),
+      );
+      stream.push(tokenFrame('Here you go'));
+      stream.push(doneFrame());
+      stream.end();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Here you go')).toBeInTheDocument();
+    });
+  });
+
+  test('renders a collapsed trace panel that expands to show completed steps', async () => {
+    postMock.mockResolvedValueOnce(
+      makeStreamResponse([
+        traceStepFrame(
+          'call_1',
+          'Looking through your charts',
+          'running',
+          'list_charts',
+        ),
+        traceStepFrame(
+          'call_1',
+          'Looking through your charts',
+          'done',
+          'list_charts',
+        ),
+        tokenFrame('Here you go'),
+        doneFrame(),
+      ]),
+    );
+
+    render(<AIChatWidget />);
+    const input = screen.getByPlaceholderText(/ask me anything/i);
+    await userEvent.type(input, 'What charts do we have?');
+    fireEvent.click(sendButton());
+
+    await waitFor(() => {
+      expect(screen.getByText('Here you go')).toBeInTheDocument();
+    });
+
+    // Collapsed by default: the step detail isn't in the DOM until expanded.
+    expect(
+      screen.queryByText('Looking through your charts'),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText(/show reasoning/i));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('Looking through your charts'),
+      ).toBeInTheDocument();
+    });
+  });
+
+  test('rotates the fallback status message while no tool is running', async () => {
+    jest.useFakeTimers();
+    let resolveResponse: (value: unknown) => void = () => {};
+    postMock.mockReturnValueOnce(
+      new Promise(resolve => {
+        resolveResponse = resolve;
+      }),
+    );
+
+    render(<AIChatWidget />);
+    fireEvent.change(screen.getByPlaceholderText(/ask me anything/i), {
+      target: { value: 'Hi' },
+    });
+    fireEvent.click(sendButton());
+
+    const indicator = screen.getByLabelText(/ai is thinking/i);
+    const firstText = indicator.textContent;
+
+    act(() => {
+      jest.advanceTimersByTime(3000);
+    });
+    expect(indicator.textContent).not.toBe(firstText);
+
+    resolveResponse(makeStreamResponse([tokenFrame('Done'), doneFrame()]));
+    jest.useRealTimers();
   });
 
   test('calls onClose when the close button is clicked', () => {

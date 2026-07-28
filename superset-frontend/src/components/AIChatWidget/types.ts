@@ -17,12 +17,25 @@
  * under the License.
  */
 
+export type TraceStepStatus = 'running' | 'done' | 'error';
+
+// One MCP tool call surfaced to the user as a human-readable step, for the
+// collapsible "reasoning" trace under an assistant message. Carries only a
+// label + status — never raw tool args/results.
+export interface TraceStep {
+  id: string;
+  tool: string;
+  label: string;
+  status: TraceStepStatus;
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
   isError?: boolean;
+  steps?: TraceStep[];
 }
 
 export interface ChatResponse {
@@ -41,6 +54,7 @@ export interface PersistedMessage {
   content: string;
   timestamp: number;
   isError?: boolean;
+  steps?: TraceStep[];
 }
 
 // A conversation persisted to localStorage, keyed by view context so the user
