@@ -23,11 +23,10 @@
 import logging
 import os
 import sys
+from datetime import timedelta
 
-logger = logging.getLogger(__name__)
-
+from cachelib.redis import RedisCache
 from celery.schedules import crontab
-from flask_caching.backends.filesystemcache import FileSystemCache
 
 logger = logging.getLogger()
 
@@ -62,17 +61,47 @@ SQLALCHEMY_EXAMPLES_URI = os.getenv(
     ),
 )
 
-SQLALCHEMY_POOL_SIZE = 20        # Max connections per worker
-SQLALCHEMY_POOL_TIMEOUT = 45    # Seconds to wait for connection
-SQLALCHEMY_MAX_OVERFLOW = 40    # Extra connections beyond pool_size
-SQLALCHEMY_POOL_RECYCLE = 3600  # Recycle connections after 1 hour
+# NOTE: SQLALCHEMY_POOL_SIZE / SQLALCHEMY_POOL_TIMEOUT / SQLALCHEMY_MAX_OVERFLOW
+# / SQLALCHEMY_POOL_RECYCLE used to be set here as bare module-level names.
+# Superset never reads config keys by those names, so they had silently had
+# no effect. SQLALCHEMY_ENGINE_OPTIONS is what Flask-SQLAlchemy actually
+# passes through to create_engine().
+#
+# Each gunicorn worker process opens its own connection pool, so total
+# possible connections to Postgres from the app alone is roughly
+# SERVER_WORKER_AMOUNT x (pool_size + max_overflow) — the Celery worker,
+# beat, and MCP processes each add their own pool on top of that. Check
+# `SHOW max_connections;` on Postgres against your actual worker counts
+# before going live, and raise max_connections (or lower these) if needed.
+SQLALCHEMY_ENGINE_OPTIONS = {
+    "pool_size": 10,
+    "max_overflow": 10,
+    "pool_recycle": 300,
+    "pool_pre_ping": True,
+}
 
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = os.getenv("REDIS_PORT", "6379")
 REDIS_CELERY_DB = os.getenv("REDIS_CELERY_DB", "0")
 REDIS_RESULTS_DB = os.getenv("REDIS_RESULTS_DB", "1")
+# Each of these gets its own db number. Sharing a db between, say, the
+# metadata/query cache and the Celery task-result backend lets either
+# workload's keys get evicted by the other under memory pressure — give each
+# logical use its own db instead.
+REDIS_CACHE_DB = os.getenv("REDIS_CACHE_DB", "2")
+REDIS_SQLLAB_DB = os.getenv("REDIS_SQLLAB_DB", "3")
+REDIS_ASYNC_QUERIES_DB = os.getenv("REDIS_ASYNC_QUERIES_DB", "4")
 
-RESULTS_BACKEND = FileSystemCache("/app/superset_home/sqllab")
+# SQL Lab query results. Redis instead of the stock FileSystemCache so
+# results are visible to every gunicorn worker process uniformly, rather than
+# depending on all workers sharing the same on-disk cache directory.
+RESULTS_BACKEND = RedisCache(
+    host=REDIS_HOST,
+    port=int(REDIS_PORT),
+    db=int(REDIS_SQLLAB_DB),
+    key_prefix="superset_results_",
+)
+RESULTS_BACKEND_CACHE_DEFAULT_TIMEOUT = int(timedelta(hours=3).total_seconds())
 
 CACHE_CONFIG = {
     "CACHE_TYPE": "RedisCache",
@@ -80,7 +109,7 @@ CACHE_CONFIG = {
     "CACHE_KEY_PREFIX": "superset_",
     "CACHE_REDIS_HOST": REDIS_HOST,
     "CACHE_REDIS_PORT": REDIS_PORT,
-    "CACHE_REDIS_DB": REDIS_RESULTS_DB,
+    "CACHE_REDIS_DB": REDIS_CACHE_DB,
 }
 DATA_CACHE_CONFIG = CACHE_CONFIG
 THUMBNAIL_CACHE_CONFIG = CACHE_CONFIG
@@ -129,6 +158,10 @@ FEATURE_FLAGS = {
     # Enable the embedded AI Assistant chat widget in this local dev env.
     # Upstream default is off; the endpoints 404 and the widget hides when off.
     "AI_ASSISTANT": True,
+    # Run chart/filter queries against Redis instead of the request thread.
+    "GLOBAL_ASYNC_QUERIES": True,
+    # Guest-token dashboard embedding into an external app.
+    "EMBEDDED_SUPERSET": True,
 }
 EXTENSIONS_PATH = "/app/docker/extensions"
 ALERT_REPORTS_NOTIFICATION_DRY_RUN = True
@@ -176,3 +209,6 @@ except ImportError:
 
 # Flask-AppBuilder Init Hook for custom views
 # FLASK_APP_MUTATOR = lambda app: my_custom_view_function(app)
+# MAPBOX_API_KEY is already provided via docker/.env — no need for (and no
+# business hardcoding) a real key as the fallback here.
+MAPBOX_API_KEY = os.getenv("MAPBOX_API_KEY", "")

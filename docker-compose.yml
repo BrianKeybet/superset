@@ -148,6 +148,14 @@ services:
       - "host.docker.internal:host-gateway"
     depends_on:
       - redis
+    # Needed so GLOBAL_ASYNC_QUERIES_JWT_SECRET (set in docker/.env-local) is
+    # available to rename into JWT_SECRET below — this service's own name for
+    # the same secret Superset config uses (see command:).
+    env_file:
+      - path: docker/.env # default
+        required: true
+      - path: docker/.env-local # optional override
+        required: false
     # Mount everything in superset-websocket into container and
     # then exclude node_modules and dist with bogus volume mount.
     # This is necessary because host and container need to have
@@ -166,12 +174,23 @@ services:
       # Mount config file. Create your own docker/superset-websocket/config.json
       # for custom settings, then point to it here. Do not use this example in production.
       # - ./docker/superset-websocket/config.example.json:/home/superset-websocket/config.json:ro
-      - ./docker/superset-websocket:/home/superset-websocket/
     environment:
       - PORT=8080
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_SSL=false
+      # Must match GLOBAL_ASYNC_QUERIES_CACHE_BACKEND's CACHE_REDIS_DB in
+      # docker/pythonpath_dev/superset_config.py (REDIS_ASYNC_QUERIES_DB,
+      # default 4) — this service and Superset read/write the same Redis
+      # stream, so a mismatch here means events never reach the browser.
+      - REDIS_DB=4
+    # Renames GLOBAL_ASYNC_QUERIES_JWT_SECRET (env_file above, shared with
+    # Superset's own config — see docker/pythonpath_dev/superset_config.py)
+    # into JWT_SECRET, the name this service itself reads. $$ escapes the $
+    # from Compose's own interpolation so the shell expands it at container
+    # runtime instead, once env_file has already populated it — keeps the
+    # actual secret value out of every tracked file.
+    command: ["sh", "-c", "JWT_SECRET=\"$$GLOBAL_ASYNC_QUERIES_JWT_SECRET\" node dist/index.js start"]
 
   superset-init:
     build:
