@@ -18,8 +18,8 @@
  */
 import React, { useEffect, useState } from 'react';
 import { keyframes } from '@emotion/react';
-import { t } from '@apache-superset/core';
-import { styled } from '@apache-superset/core/ui';
+import { t } from '@apache-superset/core/translation';
+import { styled } from '@apache-superset/core/theme';
 import { Icons } from '@superset-ui/core/components';
 import type { TraceStep } from './types';
 import { TracePanel } from './TracePanel';

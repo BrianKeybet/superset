@@ -17,9 +17,9 @@
  * under the License.
  */
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { t } from '@apache-superset/core';
+import { t } from '@apache-superset/core/translation';
 import { SupersetClient } from '@superset-ui/core';
-import { styled } from '@apache-superset/core/ui';
+import { styled } from '@apache-superset/core/theme';
 import {
   Button,
   Dropdown,

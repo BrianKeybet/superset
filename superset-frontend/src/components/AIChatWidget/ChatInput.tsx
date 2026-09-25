@@ -17,8 +17,8 @@
  * under the License.
  */
 import React, { useState, useRef, useEffect } from 'react';
-import { t } from '@apache-superset/core';
-import { styled } from '@apache-superset/core/ui';
+import { t } from '@apache-superset/core/translation';
+import { styled } from '@apache-superset/core/theme';
 import { Button, Icons, Input, Tooltip } from '@superset-ui/core/components';
 
 const InputContainer = styled.div`

@@ -18,7 +18,7 @@
  */
 import React, { useEffect, useState } from 'react';
 import { css, keyframes } from '@emotion/react';
-import { styled } from '@apache-superset/core/ui';
+import { styled } from '@apache-superset/core/theme';
 import { addAlpha, FeatureFlag, isFeatureEnabled } from '@superset-ui/core';
 import { Button, Drawer, Icons } from '@superset-ui/core/components';
 import { AIChatWidget } from './AIChatWidget';
