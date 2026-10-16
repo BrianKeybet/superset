@@ -26,7 +26,17 @@ REALTIME_NOTIFICATION_JWT_ISSUER = "superset"
 
 def can_access_realtime_notifications() -> bool:
     """Return whether the current principal may receive websocket notifications."""
+    from flask import g
+
     from superset import security_manager
+
+    # ``after_request`` hooks (the channel cookie) also run when a
+    # ``before_request`` handler such as the rate limiter or CSRF check rejected
+    # the request before the user was loaded. With no ``g.user`` there is no
+    # principal to notify, and ``can_access`` would raise ``AttributeError``,
+    # turning that 4xx response into a 500.
+    if getattr(g, "user", None) is None:
+        return False
 
     return security_manager.can_access(
         REALTIME_NOTIFICATION_PERMISSION,

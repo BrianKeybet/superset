@@ -317,3 +317,45 @@ def test_cookie_cleared_when_realtime_permission_removed(mocker) -> None:
         if "superset-ws-token" in c and ("Expires" in c or "Max-Age=0" in c)
     ]
     assert cleared, "stale cookie must be cleared without realtime permission"
+
+
+def test_realtime_access_false_without_loaded_user(mocker) -> None:
+    from flask import Flask
+
+    from superset.websocket import permissions
+
+    can_access = mocker.patch("superset.security_manager.can_access")
+
+    # No ``g.user``: a before_request handler rejected the request before the
+    # user was loaded. The check answers False without touching ``g.user``.
+    with Flask(__name__).test_request_context():
+        assert permissions.can_access_realtime_notifications() is False
+    can_access.assert_not_called()
+
+
+def test_cookie_hook_keeps_rejection_status_without_loaded_user(mocker) -> None:
+    from flask import abort
+
+    # The real permission check runs (not patched); ``can_access`` raising here
+    # stands in for its ``g.user`` access when no user was loaded.
+    mocker.patch(
+        "superset.security_manager.can_access",
+        side_effect=AttributeError("user"),
+    )
+    app = _make_ws_app()
+
+    @app.before_request
+    def _reject():  # a rate limiter / CSRF check rejecting before user load
+        abort(429)
+
+    client = app.test_client()
+    client.set_cookie("superset-ws-token", "stale")
+    resp = client.get("/_ws_probe")
+
+    assert resp.status_code == 429
+    cleared = [
+        c
+        for c in resp.headers.getlist("Set-Cookie")
+        if "superset-ws-token" in c and ("Expires" in c or "Max-Age=0" in c)
+    ]
+    assert cleared, "stale cookie must be cleared when no user was loaded"
