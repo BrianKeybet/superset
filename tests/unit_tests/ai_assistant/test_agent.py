@@ -133,3 +133,76 @@ def test_invoke_agent_stream_marks_failed_tool_call_as_error(
     assert trace_steps[-1]["id"] == "call_2"
     # The trace only ever carries the friendly label, never the raw tool output.
     assert "table not found" not in trace_steps[-1]["label"]
+
+
+def test_invoke_agent_stream_logs_token_usage_per_turn(
+    mocker: Any, app_context: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Two LLM calls in one turn; LangChain's input_tokens includes cache tokens.
+    events = [
+        AIMessageChunk(
+            content="",
+            usage_metadata={
+                "input_tokens": 1200,
+                "output_tokens": 0,
+                "total_tokens": 1200,
+                "input_token_details": {"cache_read": 1000, "cache_creation": 0},
+            },
+        ),
+        AIMessageChunk(
+            content="Done.",
+            usage_metadata={
+                "input_tokens": 300,
+                "output_tokens": 40,
+                "total_tokens": 340,
+                "input_token_details": {"cache_read": 0, "cache_creation": 100},
+            },
+        ),
+    ]
+    mocker.patch(
+        "superset.ai_assistant.agent.create_superset_agent",
+        return_value=_fake_agent(events),
+    )
+    mocker.patch(
+        "superset.ai_assistant.agent.get_llm_cache_key",
+        return_value=("anthropic", "claude-sonnet-5-5", 0.7, 4096, True),
+    )
+
+    with caplog.at_level("INFO", logger="superset.ai_assistant.agent"):
+        list(invoke_agent_stream("hello"))
+
+    usage_lines = [r.getMessage() for r in caplog.records if "AI usage:" in r.message]
+    assert usage_lines == [
+        "AI usage: model=claude-sonnet-5-5 input_tokens=400 output_tokens=40 "
+        "cache_read_tokens=1000 cache_creation_tokens=100"
+    ]
+
+
+def test_invoke_agent_stream_logs_usage_even_when_stream_fails(
+    mocker: Any, app_context: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    def failing_stream() -> Any:
+        yield (
+            AIMessageChunk(
+                content="",
+                usage_metadata={
+                    "input_tokens": 500,
+                    "output_tokens": 0,
+                    "total_tokens": 500,
+                },
+            ),
+            {},
+        )
+        raise RuntimeError("boom")
+
+    agent = MagicMock()
+    agent.stream.return_value = failing_stream()
+    mocker.patch(
+        "superset.ai_assistant.agent.create_superset_agent", return_value=agent
+    )
+
+    with caplog.at_level("INFO", logger="superset.ai_assistant.agent"):
+        results = list(invoke_agent_stream("hello"))
+
+    assert results[-1] == ("error", "boom")
+    assert any("input_tokens=500" in r.getMessage() for r in caplog.records)

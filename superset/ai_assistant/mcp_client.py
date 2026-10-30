@@ -33,7 +33,7 @@ import os
 from typing import Any, Callable, Optional
 
 import requests
-from langchain_core.tools import Tool
+from langchain_core.tools import BaseTool, StructuredTool, Tool
 
 from superset.utils import json
 
@@ -418,14 +418,14 @@ def create_mcp_langchain_tool(
 
 # Module-level cache. MCP tool discovery + wrapping is expensive but the result
 # is stable for the process lifetime, so build it once and reuse across requests.
-_cached_mcp_tools: Optional[list[Tool]] = None
+_cached_mcp_tools: Optional[list[BaseTool]] = None
 
 
 def get_mcp_tools(
     host: str = DEFAULT_MCP_HOST,
     port: int = DEFAULT_MCP_PORT,
     tool_filter: Optional[list[str]] = None,
-) -> list[Tool]:
+) -> list[BaseTool]:
     """
     Load MCP tools directly from the FastMCP instance (in-process).
 
@@ -462,7 +462,43 @@ def get_mcp_tools(
     return _cached_mcp_tools
 
 
-def _build_mcp_tools() -> list[Tool]:  # noqa: C901
+def _normalize_tool_arguments(tool_obj: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Shape model-supplied arguments to a FastMCP tool's parameters.
+
+    Most Superset tools take a single ``request`` object. Models sometimes send
+    its fields flattened, or the object as a JSON string, so those are wrapped or
+    parsed into ``{"request": {...}}``. Anything else is passed through for
+    FastMCP to validate.
+    """
+    properties = (getattr(tool_obj, "parameters", None) or {}).get("properties", {})
+    if set(properties) != {"request"}:
+        return kwargs
+    request = kwargs["request"] if set(kwargs) == {"request"} else kwargs
+    if isinstance(request, str):
+        try:
+            request = json.loads(request)
+        except ValueError:
+            pass
+    return {"request": request}
+
+
+def _tool_result_to_text(result: Any) -> str:
+    """Flatten a FastMCP ``ToolResult`` (or a plain value) into text for the LLM."""
+    content = getattr(result, "content", None)
+    if content is not None:
+        texts = [text for block in content if (text := getattr(block, "text", None))]
+        if texts:
+            return "\n".join(texts)
+        structured = getattr(result, "structured_content", None)
+        return json.dumps(structured) if structured is not None else ""
+    if isinstance(result, str):
+        return result
+    if isinstance(result, dict):
+        return json.dumps(result)
+    return str(result)
+
+
+def _build_mcp_tools() -> list[BaseTool]:  # noqa: C901
     """Discover and wrap all in-process FastMCP tools as LangChain tools.
 
     This is the expensive path (registration, registry introspection, wrapper
@@ -544,128 +580,69 @@ def _build_mcp_tools() -> list[Tool]:  # noqa: C901
             return set_context(context)
 
         # Convert FastMCP tools to LangChain tools
-        langchain_tools = []
+        langchain_tools: list[BaseTool] = []
         for fastmcp_tool in fastmcp_tools:
             try:
                 tool_name = fastmcp_tool.name
 
-                # Create wrapper that handles Flask request context
-                def make_tool_wrapper(  # noqa: C901
+                def make_tool_wrapper(
                     tool_obj: Any, flask_app: Any
-                ) -> Callable[..., Any]:
-                    """Create a wrapper with proper Flask request context."""
+                ) -> Callable[..., str]:
+                    """Create a wrapper that runs a FastMCP tool in-process.
 
-                    def tool_wrapper(*args: Any, **kwargs: Any) -> Any:  # noqa: C901
-                        """Call FastMCP tool with Flask request context."""
-                        # Handle LangChain's positional argument convention
-                        request_obj = None
-                        if args and len(args) > 0:
-                            if isinstance(args[0], dict):
-                                request_obj = args[0]
-                                kwargs = {**request_obj, **kwargs}
-                            else:
-                                request_obj = args[0]
-                                kwargs = {"input": args[0]}
+                    Calls go through ``tool_obj.run()`` so FastMCP validates the
+                    arguments into the tool's Pydantic request model and injects
+                    its Context, exactly as for MCP clients; the auth/RBAC
+                    wrapper registered by ``@tool`` still runs inside it.
+                    """
 
-                        tool_name_inner = (
-                            tool_obj.name
-                            if hasattr(tool_obj, "name")
-                            else str(tool_obj)
-                        )
+                    def tool_wrapper(**kwargs: Any) -> str:
+                        """Call the FastMCP tool with a Flask request context."""
+                        from flask import g, has_request_context
 
+                        arguments = _normalize_tool_arguments(tool_obj, kwargs)
                         try:
-                            logger.debug("📖 [CALL] Calling %s", tool_name_inner)
-
-                            # Get the underlying tool function
-                            if hasattr(tool_obj, "fn") and callable(tool_obj.fn):
-                                tool_callable = tool_obj.fn
-                            elif callable(tool_obj):
-                                tool_callable = tool_obj
-                            else:
-                                return f"❌ Tool {tool_name_inner} not callable"
-
-                            # Reuse the existing Flask request context if present,
-                            # otherwise create one.
-                            from flask import g, has_request_context
-
+                            logger.debug("📖 [CALL] Calling %s", tool_obj.name)
                             if has_request_context():
-                                # Already inside a request context (API endpoint).
-                                logger.debug(
-                                    "Using existing Flask request context for %s",
-                                    tool_name_inner,
-                                )
-                                if asyncio.iscoroutinefunction(tool_callable):
-                                    # @parse_request tools take the request as the first
-                                    # arg; needs a FastMCP context for logging.
-                                    # and need FastMCP context for logging
-                                    with create_fastmcp_context_manager():
-                                        result = asyncio.run(
-                                            tool_callable(request_obj or kwargs)
-                                        )
-                                else:
-                                    with create_fastmcp_context_manager():
-                                        result = tool_callable(request_obj or kwargs)
+                                # Inside the API request: reuse its context.
+                                with create_fastmcp_context_manager():
+                                    result = asyncio.run(tool_obj.run(arguments))
                             else:
-                                # No request context — create a test one with proper
-                                # auth setup.
-                                logger.debug(
-                                    "Creating test request context for %s",
-                                    tool_name_inner,
-                                )
+                                # No request context — create a test one with
+                                # g.user set so the auth wrapper can resolve it.
                                 with flask_app.test_request_context():
-                                    # Set g.user so the auth wrapper can read
-                                    # user.roles without an AnonymousUserMixin error.
                                     try:
                                         from flask_login import current_user
 
                                         g.user = current_user
                                     except Exception as exc:  # noqa: BLE001
-                                        # Best-effort: some tools don't require auth.
+                                        # Best-effort: some tools don't need auth.
                                         logger.debug(
                                             "Could not set g.user from session: %s",
                                             exc,
                                         )
-
-                                    # Call the tool function with FastMCP context
-                                    if asyncio.iscoroutinefunction(tool_callable):
-                                        # @parse_request tools take the request as
-                                        # the first positional arg (FastMCP context).
-                                        # and need FastMCP context for logging
-                                        with create_fastmcp_context_manager():
-                                            result = asyncio.run(
-                                                tool_callable(request_obj or kwargs)
-                                            )
-                                    else:
-                                        with create_fastmcp_context_manager():
-                                            result = tool_callable(
-                                                request_obj or kwargs
-                                            )
-
-                            # Convert result to string
-                            if isinstance(result, str):
-                                return result
-                            elif isinstance(result, dict):
-                                return json.dumps(result)
-                            else:
-                                return str(result)
+                                    with create_fastmcp_context_manager():
+                                        result = asyncio.run(tool_obj.run(arguments))
+                            return _tool_result_to_text(result)
 
                         except Exception as e:
                             error_msg = (
-                                f"Tool {tool_name_inner} execution failed: {str(e)}"
+                                f"Tool {tool_obj.name} execution failed: {str(e)}"
                             )
                             logger.error("❌ %s", error_msg, exc_info=True)
                             return f"❌ {error_msg}"
 
                     return tool_wrapper
 
-                # Create the LangChain tool
+                # Create the LangChain tool. Its args_schema is the FastMCP tool's
+                # own JSON schema, so the model sees the real argument structure.
                 description = fastmcp_tool.description or f"MCP tool: {tool_name}"
 
-                langchain_tool = Tool(
+                langchain_tool = StructuredTool(
                     name=tool_name,
                     func=make_tool_wrapper(fastmcp_tool, mcp_flask_app),
                     description=description,
-                    args_schema=None,
+                    args_schema=fastmcp_tool.parameters,
                 )
 
                 langchain_tools.append(langchain_tool)

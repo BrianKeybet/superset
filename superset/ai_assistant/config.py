@@ -70,6 +70,28 @@ def get_llm_cache_key() -> tuple[str, str, float, int, bool]:
     return _resolve_llm_settings()
 
 
+# Claude models whose thinking cannot be turned off: any explicit `thinking`
+# configuration other than adaptive is rejected with a 400, so it is omitted.
+_THINKING_ALWAYS_ON_PREFIXES = ("claude-opus-5-5", "claude-fable-5", "claude-mythos-5")
+# Claude models that reject {"type": "disabled"} and turn thinking off with
+# {"type": "between_tools"} instead (no other thinking field allowed).
+_THINKING_BETWEEN_TOOLS_PREFIXES = ("claude-sonnet-5-5",)
+
+
+def thinking_off_config(model: str) -> dict[str, str] | None:
+    """Return the `thinking` value that turns thinking off for ``model``.
+
+    Returns None when the model cannot run without thinking, meaning the
+    parameter must be omitted.
+    """
+    name = model.lower()
+    if name.startswith(_THINKING_ALWAYS_ON_PREFIXES):
+        return None
+    if name.startswith(_THINKING_BETWEEN_TOOLS_PREFIXES):
+        return {"type": "between_tools"}
+    return {"type": "disabled"}
+
+
 def _build_llm(
     provider: str,
     model: str,
@@ -100,14 +122,15 @@ def _build_llm(
         "model": model,
         "max_tokens": max_tokens,
         "streaming": streaming,
-        # Disable extended thinking: on current Claude models the streamed
-        # tool-calling loop can re-send thinking blocks without their content,
-        # causing "thinking.thinking: Field required" 400s. A tool-first
-        # assistant doesn't need it. Set AI_ENABLE_THINKING=true to opt back in.
-        "thinking": {"type": "disabled"},
     }
-    if os.getenv("AI_ENABLE_THINKING", "false").lower() == "true":
-        anthropic_kwargs.pop("thinking")
+    # Disable extended thinking where the model allows it: on current Claude
+    # models the streamed tool-calling loop can re-send thinking blocks without
+    # their content, causing "thinking.thinking: Field required" 400s. A
+    # tool-first assistant doesn't need it. Set AI_ENABLE_THINKING=true to opt
+    # back in (the parameter is then omitted and the model thinks adaptively).
+    if os.getenv("AI_ENABLE_THINKING", "false").lower() != "true":
+        if (thinking := thinking_off_config(model)) is not None:
+            anthropic_kwargs["thinking"] = thinking
     # Newer Claude models (Sonnet 5, Opus 4.x, …) reject the deprecated
     # `temperature` parameter with a 400. Only send it when explicitly opted in
     # via AI_SEND_TEMPERATURE=true (for older models that still accept it).

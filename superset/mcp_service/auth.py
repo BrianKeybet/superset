@@ -51,6 +51,7 @@ from typing import Any, Callable, cast, Generator, TYPE_CHECKING, TypeAlias, Typ
 
 from flask import current_app, g, has_app_context, has_request_context
 from flask_appbuilder.security.sqla.models import User
+from sqlalchemy import inspect as sa_inspect
 
 from superset import is_feature_enabled, security_manager
 from superset.mcp_service.composite_token_verifier import (
@@ -947,6 +948,24 @@ def _assert_user_active(user: MCPUser | None) -> None:
         )
 
 
+def _attach_if_detached(user: MCPUser) -> MCPUser:
+    """Re-attach a detached ORM ``User`` to the current scoped session.
+
+    In-process callers (the AI Assistant) make several tool calls within one
+    request. Each call runs in its own scoped session, removed when the call's
+    app context ends, so a ``g.user`` merged into an earlier call's session is
+    detached by the next call and lazy-loading ``user.roles`` would raise
+    ``DetachedInstanceError``. Merging copies the user into the current session
+    (reloading it by primary key); attached users and guests pass through.
+    """
+    if not isinstance(user, User) or not sa_inspect(user).detached:
+        return user
+
+    from superset.extensions import db
+
+    return db.session.merge(user)
+
+
 def _resolve_user_with_retry() -> MCPUser | None:
     """
     Resolve the current user, retrying once on a stale DB connection.
@@ -964,7 +983,7 @@ def _resolve_user_with_retry() -> MCPUser | None:
 
     for attempt in range(2):
         try:
-            user = get_user_from_request()
+            user = _attach_if_detached(get_user_from_request())
 
             # Validate user has necessary relationships loaded.
             # Force access to ensure they're loaded if lazy.

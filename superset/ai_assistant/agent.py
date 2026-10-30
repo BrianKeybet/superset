@@ -52,6 +52,53 @@ from langgraph.prebuilt import create_react_agent  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
+
+def _add_usage(totals: dict[str, int], usage: Any) -> None:
+    """Accumulate a LangChain ``usage_metadata`` dict into ``totals``.
+
+    LangChain reports ``input_tokens`` including cache reads and cache writes;
+    they are split out so each token class can be priced separately.
+    """
+    if not usage:
+        return
+    details = usage.get("input_token_details") or {}
+    cache_read = int(details.get("cache_read") or 0)
+    cache_creation = int(details.get("cache_creation") or 0)
+    totals["input_tokens"] += max(
+        int(usage.get("input_tokens") or 0) - cache_read - cache_creation, 0
+    )
+    totals["output_tokens"] += int(usage.get("output_tokens") or 0)
+    totals["cache_read_tokens"] += cache_read
+    totals["cache_creation_tokens"] += cache_creation
+
+
+def _new_usage_totals() -> dict[str, int]:
+    return dict.fromkeys(
+        ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"),
+        0,
+    )
+
+
+def _log_usage(totals: dict[str, int]) -> None:
+    """Log the token usage of one chat turn (all LLM calls of the agent loop).
+
+    The line format is parsed by the deployment's metrics collector; keep it
+    stable: ``AI usage: model=<m> input_tokens=<n> output_tokens=<n>
+    cache_read_tokens=<n> cache_creation_tokens=<n>``.
+    """
+    if not any(totals.values()):
+        return
+    logger.info(
+        "AI usage: model=%s input_tokens=%d output_tokens=%d "
+        "cache_read_tokens=%d cache_creation_tokens=%d",
+        get_llm_cache_key()[1],
+        totals["input_tokens"],
+        totals["output_tokens"],
+        totals["cache_read_tokens"],
+        totals["cache_creation_tokens"],
+    )
+
+
 # Cache compiled agents by resolved LLM config so we don't rebuild the LLM,
 # rediscover MCP tools, and recompile the LangGraph graph on every request.
 _agent_cache: dict[tuple[str, str, float, int, bool], Any] = {}
@@ -500,6 +547,10 @@ def invoke_agent(
 
         # Extract the final message from the agent response
         response_messages = response.get("messages", [])
+        usage = _new_usage_totals()
+        for msg in response_messages[len(messages) :]:
+            _add_usage(usage, getattr(msg, "usage_metadata", None))
+        _log_usage(usage)
         if not response_messages:
             final_message = "No response from agent"
         else:
@@ -574,6 +625,7 @@ def invoke_agent_stream(
     windowed history) but replaces the blocking `.invoke()` with LangGraph's
     token streaming, and records the full accumulated answer at the end.
     """
+    usage = _new_usage_totals()
     try:
         agent = create_superset_agent()
         messages = _prepare_messages(query, context, conversation_history)
@@ -595,6 +647,7 @@ def invoke_agent_stream(
             {"messages": messages}, stream_mode="messages"
         ):
             if isinstance(chunk, AIMessageChunk):
+                _add_usage(usage, chunk.usage_metadata)
                 for tool_call_chunk in chunk.tool_call_chunks or []:
                     tc_id = tool_call_chunk.get("id")
                     tc_name = tool_call_chunk.get("name")
@@ -640,6 +693,9 @@ def invoke_agent_stream(
     except Exception as e:
         logger.error("Agent stream failed: %s", str(e), exc_info=True)
         yield ("error", str(e))
+    finally:
+        # Tokens spent before a mid-stream failure are billed too.
+        _log_usage(usage)
 
 
 # ========================================================================
