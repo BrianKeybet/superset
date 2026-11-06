@@ -30,7 +30,8 @@ The MCP service runs on localhost:5008 and provides tools for:
 import asyncio
 import logging
 import os
-from typing import Any, Callable, Optional
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator, Optional
 
 import requests
 from langchain_core.tools import BaseTool, StructuredTool, Tool
@@ -482,6 +483,34 @@ def _normalize_tool_arguments(tool_obj: Any, kwargs: dict[str, Any]) -> dict[str
     return {"request": request}
 
 
+@contextmanager
+def _isolated_request_context(flask_app: Any) -> Iterator[None]:
+    """Run one in-process tool call in its own copy of the current request.
+
+    The agent runs parallel tool calls in worker threads that inherit the chat
+    request's Flask contexts, so without this they share one ``g``. The MCP
+    auth wrapper stores each call's user in ``g.user`` bound to that call's
+    own DB session, and when one call finishes and removes its session, the
+    calls still running read a detached user (DetachedInstanceError on
+    ``user.roles``). A fresh app context gives every call its own ``g``;
+    the per-call session token keeps that context's teardown from removing
+    the chat request's own session.
+    """
+    from flask import g, request
+
+    from superset.mcp_service.session_scope import _mcp_session_token
+
+    user = getattr(g, "user", None)
+    environ = request.environ.copy()
+    token = _mcp_session_token.set(object())
+    try:
+        with flask_app.app_context(), flask_app.request_context(environ):
+            g.user = user
+            yield
+    finally:
+        _mcp_session_token.reset(token)
+
+
 def _tool_result_to_text(result: Any) -> str:
     """Flatten a FastMCP ``ToolResult`` (or a plain value) into text for the LLM."""
     content = getattr(result, "content", None)
@@ -604,9 +633,11 @@ def _build_mcp_tools() -> list[BaseTool]:  # noqa: C901
                         try:
                             logger.debug("📖 [CALL] Calling %s", tool_obj.name)
                             if has_request_context():
-                                # Inside the API request: reuse its context.
-                                with create_fastmcp_context_manager():
-                                    result = asyncio.run(tool_obj.run(arguments))
+                                # Inside the API request: run in a copy of its
+                                # context so this call has its own ``g``.
+                                with _isolated_request_context(flask_app):
+                                    with create_fastmcp_context_manager():
+                                        result = asyncio.run(tool_obj.run(arguments))
                             else:
                                 # No request context — create a test one with
                                 # g.user set so the auth wrapper can resolve it.

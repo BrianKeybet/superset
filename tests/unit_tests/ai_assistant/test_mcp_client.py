@@ -162,3 +162,60 @@ def test_tool_result_to_text() -> None:
     )
     assert mcp_client._tool_result_to_text("plain") == "plain"
     assert mcp_client._tool_result_to_text({"a": 1}) == '{"a": 1}'
+
+
+def test_bridge_gives_parallel_calls_their_own_g(mocker: Any, app: Any) -> None:
+    """Parallel tool calls must not share ``g`` with each other or the request.
+
+    The agent runs parallel tool calls in threads that inherit the request's
+    contexts; a shared ``g.user`` was detached by whichever call finished first.
+    """
+    import contextvars
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from flask import g
+
+    seen: list[tuple[int, Any]] = []
+    both_running = threading.Barrier(2, timeout=5)
+    server = FastMCP("test")
+
+    @server.tool
+    def probe(request: LookupRequest) -> LookupResponse:
+        """Record this call's ``g`` while the other call is also running."""
+        both_running.wait()
+        seen.append((id(g._get_current_object()), g.user))
+        g.user = f"changed by {request.identifier}"
+        return LookupResponse(identifier=request.identifier, request_type="probe")
+
+    mocker.patch("superset.mcp_service.app.mcp", server)
+    mocker.patch("superset.mcp_service.app.register_all_tools")
+    mocker.patch(
+        "superset.mcp_service.app.get_registered_mcp_tools",
+        return_value=mcp_client.asyncio.run(server.list_tools()),
+    )
+    mocker.patch.dict(
+        sys.modules,
+        {"superset.mcp_service.flask_singleton": types.SimpleNamespace(app=app)},
+    )
+    tool = {t.name: t for t in mcp_client._build_mcp_tools()}["probe"]
+
+    with app.test_request_context():
+        g.user = "request user"
+        request_g = id(g._get_current_object())
+        with ThreadPoolExecutor(2) as pool:
+            futures = [
+                pool.submit(
+                    contextvars.copy_context().run,
+                    tool.invoke,
+                    {"request": {"identifier": i}},
+                )
+                for i in range(2)
+            ]
+            results = [json.loads(f.result()) for f in futures]
+
+        assert g.user == "request user"
+
+    assert [r["identifier"] for r in results] == [0, 1]
+    assert [user for _, user in seen] == ["request user", "request user"]
+    assert len({g_id for g_id, _ in seen} | {request_g}) == 3
