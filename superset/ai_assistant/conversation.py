@@ -41,6 +41,23 @@ CONVERSATION_EXPIRY_HOURS = 24 * 30  # 30 days
 # and therefore latency and cost — stays bounded on long conversations.
 MAX_CONTEXT_MESSAGES = 20
 
+# Role of the internal record of the tool calls behind an assistant answer.
+# Stored as its own row right after that answer, replayed to the agent folded
+# into the answer (so the next turn can reuse resolved datasets and working
+# queries instead of rediscovering them), and never returned to the UI.
+TOOL_TRAIL_ROLE = "tool_trail"
+
+# Only the most recent trails are replayed; older ones cost tokens for little.
+MAX_REPLAYED_TOOL_TRAILS = 3
+
+_TOOL_TRAIL_HEADER = (
+    "[Tool calls behind this answer, kept for your reference; the user does "
+    "not see this]"
+)
+
+# Roles never shown to the user or counted as conversation messages.
+_INTERNAL_ROLES = frozenset({TOOL_TRAIL_ROLE})
+
 
 def _to_uuid(value: Any) -> Optional[uuid.UUID]:
     """Coerce a value to a UUID, returning None if it isn't a valid UUID."""
@@ -140,8 +157,11 @@ class ConversationHistory:
             content[:50],
         )
 
-    def get_messages(self) -> list[dict[str, Any]]:
-        """Return all messages (role, content, timestamp) for this conversation."""
+    def get_messages(self, include_internal: bool = False) -> list[dict[str, Any]]:
+        """Return the messages (role, content, timestamp) of this conversation.
+
+        Internal rows (tool trails) are left out unless ``include_internal``.
+        """
         conv = self._conversation()
         if conv is None:
             return []
@@ -152,20 +172,38 @@ class ConversationHistory:
                 "timestamp": (m.created_on or datetime.now()).isoformat(),
             }
             for m in conv.messages
+            if include_internal or m.role not in _INTERNAL_ROLES
         ]
 
     def get_conversation_context(self) -> list[dict[str, str]]:
         """Return the recent message window formatted for the agent.
 
         Excludes system messages (the agent supplies its own system prompt) and
-        keeps only the most recent ``MAX_CONTEXT_MESSAGES`` messages.
+        keeps only the most recent ``MAX_CONTEXT_MESSAGES`` messages. Each tool
+        trail is folded into the assistant answer it belongs to, for the most
+        recent ``MAX_REPLAYED_TOOL_TRAILS`` answers only.
         """
-        context = [
-            {"role": msg["role"], "content": msg["content"]}
-            for msg in self.get_messages()
-            if msg["role"] != "system"
-        ]
-        return context[-MAX_CONTEXT_MESSAGES:]
+        context: list[dict[str, str]] = []
+        trails: dict[int, str] = {}  # index in context -> trail text
+        for msg in self.get_messages(include_internal=True):
+            role = msg["role"]
+            if role == "system":
+                continue
+            if role == TOOL_TRAIL_ROLE:
+                if context and context[-1]["role"] == "assistant":
+                    trails[len(context) - 1] = msg["content"]
+                continue
+            context.append({"role": role, "content": msg["content"]})
+
+        start = max(len(context) - MAX_CONTEXT_MESSAGES, 0)
+        replayed = sorted(i for i in trails if i >= start)[-MAX_REPLAYED_TOOL_TRAILS:]
+        for i in replayed:
+            context[i] = {
+                "role": "assistant",
+                "content": f"{context[i]['content']}\n\n{_TOOL_TRAIL_HEADER}\n"
+                f"{trails[i]}",
+            }
+        return context[start:]
 
     def clear(self) -> None:
         """Delete this conversation and its messages."""
@@ -207,6 +245,7 @@ class ConversationHistory:
                 "timestamp": (m.created_on or datetime.now()).isoformat(),
             }
             for m in conv.messages
+            if m.role not in _INTERNAL_ROLES
         ]
 
     @staticmethod
@@ -226,7 +265,9 @@ class ConversationHistory:
                 "context_key": conv.context_key,
                 "context_label": conv.context_label,
                 "title": conv.title,
-                "message_count": len(conv.messages),
+                "message_count": sum(
+                    1 for m in conv.messages if m.role not in _INTERNAL_ROLES
+                ),
                 "created_on": (conv.created_on or datetime.now()).isoformat(),
                 "changed_on": (conv.changed_on or datetime.now()).isoformat(),
             }

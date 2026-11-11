@@ -770,6 +770,12 @@ VALID_FILTER_OPS = Literal[
     "TEMPORAL_RANGE",
 ]
 
+# Operators exempt from the "needs a value" check: the IS ... tests take no
+# value, and a TEMPORAL_RANGE value is validated by its own rule below.
+_FILTER_OPS_WITHOUT_VALUE = frozenset(
+    {"IS NULL", "IS NOT NULL", "IS TRUE", "IS FALSE", "TEMPORAL_RANGE"}
+)
+
 
 class QueryDatasetFilter(BaseModel):
     """A single filter condition for dataset queries."""
@@ -785,8 +791,26 @@ class QueryDatasetFilter(BaseModel):
     )
     val: Any = Field(
         default=None,
-        description="Filter value (omit for IS NULL/IS NOT NULL)",
+        # "value" is accepted too: callers (LLMs especially) often use it, and
+        # silently dropping it turned "== X" into an IS NULL match.
+        validation_alias=AliasChoices("val", "value"),
+        description="Filter value (omit for IS NULL/IS NOT NULL/IS TRUE/IS FALSE)",
     )
+
+    @model_validator(mode="after")
+    def _require_val_for_value_ops(self) -> "QueryDatasetFilter":
+        """Reject a missing value for operators that compare against one.
+
+        Without this, ``{"col": "x", "op": "=="}`` (or a value under an
+        unrecognised key) reaches the query as ``x == NULL`` and returns a
+        plausible but wrong result instead of an error.
+        """
+        if self.val is None and self.op not in _FILTER_OPS_WITHOUT_VALUE:
+            raise ValueError(
+                f'Filter on "{self.col}" with op "{self.op}" needs a value in '
+                '"val". Use op "IS NULL" to match missing values.'
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_temporal_range_val(self) -> "QueryDatasetFilter":

@@ -67,3 +67,36 @@ class TestRequestSchemaAliasChoices:
                 search="sample",
                 filters=[DatasetFilter(col="table_name", opr="sw", value="test")],
             )
+
+
+class TestQueryDatasetFilterValue:
+    """A comparison filter must carry its value; 'value' is accepted for 'val'
+    so it is never silently dropped into an ``== NULL`` match."""
+
+    def test_value_alias_is_accepted(self) -> None:
+        from superset.mcp_service.dataset.schemas import QueryDatasetFilter
+
+        flt = QueryDatasetFilter.model_validate(
+            {"col": "REGION", "op": "==", "value": "RIFTVALLEY"}
+        )
+        assert flt.val == "RIFTVALLEY"
+
+    def test_val_still_works(self) -> None:
+        from superset.mcp_service.dataset.schemas import QueryDatasetFilter
+
+        flt = QueryDatasetFilter(col="REGION", op="IN", val=["A", "B"])
+        assert flt.val == ["A", "B"]
+
+    def test_missing_value_for_comparison_is_rejected(self) -> None:
+        from superset.mcp_service.dataset.schemas import QueryDatasetFilter
+
+        with pytest.raises(ValueError, match='needs a value in "val"'):
+            QueryDatasetFilter.model_validate({"col": "REGION", "op": "=="})
+
+    @pytest.mark.parametrize("op", ["IS NULL", "IS NOT NULL", "IS TRUE", "IS FALSE"])
+    def test_value_free_ops_need_no_value(self, op: str) -> None:
+        from superset.mcp_service.dataset.schemas import QueryDatasetFilter
+
+        assert (
+            QueryDatasetFilter.model_validate({"col": "REGION", "op": op}).val is None
+        )
