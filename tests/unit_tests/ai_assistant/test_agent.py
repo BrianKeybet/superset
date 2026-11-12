@@ -343,6 +343,7 @@ DATASET_INFO = {
     "table_name": "Kapa_Sales_Data",
     "schema": "public",
     "database_name": "KAPA DW 02",
+    "database_id": 2,
     "is_virtual": True,
     "sql": "SELECT *\n  FROM kapa_sales_summary",
     "main_dttm_col": "INVOICE_DATE",
@@ -377,8 +378,9 @@ def test_context_block_lists_dashboard_datasets_in_detail(
 
     assert '- Current dashboard (ID 10): "Kapa Sales Dashboard".' in block
     assert (
-        'Dataset 22 "Kapa_Sales_Data" (schema public, database KAPA DW 02); '
-        "virtual, not a database table; its SQL: SELECT * FROM kapa_sales_summary"
+        'Dataset 22 "Kapa_Sales_Data" (schema public, database KAPA DW 02 '
+        "(database_id 2)); virtual, not a database table; its SQL: "
+        "SELECT * FROM kapa_sales_summary"
     ) in block
     assert 'Saved metrics: net_sales = SUM("NET_AMOUNT")' in block
     assert "Columns: MO (STRING), NET_AMOUNT (DECIMAL)" in block
@@ -419,3 +421,63 @@ def test_context_block_falls_back_to_id_when_lookup_fails(mocker: Any) -> None:
     block = agent._build_context_block({"dashboard_id": 10})
 
     assert block == "The user is currently viewing:\n- Current dashboard: ID 10"
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (
+            "❌ Tool execute_sql execution failed: boom",
+            "❌ Tool execute_sql execution failed: boom",
+        ),
+        (
+            '{"success": false, "error": "no such table: t", "error_type": "failed"}',
+            "no such table: t",
+        ),
+        (
+            '{"error": "Dataset not found", "error_type": "NotFound"}',
+            "Dataset not found",
+        ),
+        ('{"success": false}', "unsuccessful (no error message)"),
+        ('{"success": true, "error": null, "rows": []}', None),
+        ('{"data": [], "error": ""}', None),
+        ("[1, 2]", None),
+        ("plain text result", None),
+    ],
+)
+def test_tool_error_text(content: str, expected: str | None) -> None:
+    from superset.ai_assistant.agent import _tool_error_text
+
+    assert _tool_error_text(content) == expected
+
+
+def test_invoke_agent_stream_treats_json_error_as_failure(
+    mocker: Any, app_context: None
+) -> None:
+    events = [
+        AIMessageChunk(
+            content="",
+            tool_call_chunks=[
+                {"name": "execute_sql", "args": "{}", "id": "c1", "index": 0}
+            ],
+        ),
+        ToolMessage(
+            content='{"success": false, "error": "no such table: kapa_sales_summary"}',
+            name="execute_sql",
+            tool_call_id="c1",
+        ),
+    ]
+    mocker.patch(
+        "superset.ai_assistant.agent.create_superset_agent",
+        return_value=_fake_agent(events),
+    )
+    history = MagicMock()
+    history.get_conversation_context.return_value = []
+
+    results = list(invoke_agent_stream("q", conversation_history=history))
+
+    steps = [payload for kind, payload in results if kind == "trace_step"]
+    assert steps[-1]["status"] == "error"
+    history.add_message.assert_any_call(
+        "tool_trail", "- execute_sql {} -> error: no such table: kapa_sales_summary"
+    )

@@ -137,8 +137,30 @@ OPERATING RULES
 WORKFLOW
 For each data or chart task: discover → disambiguate (Rule 7; wait for confirmation if triggered) → validate with get_*_info → execute → verify writes by re-reading → report. Don't skip or reorder steps. If discovery finds nothing useful, tell the user before proceeding.
 
+ANALYSIS
+For trends, forecasts and targets:
+- Use completed periods only. State the latest data date and treat the current period as partial.
+- Compare like with like. Year-on-year growth compares the same periods: the last completed months against the same months a year earlier, never year-to-date against a single month.
+- Measure seasonality as the percentage uplift of the target period over a stated baseline (e.g. the same year's last three completed months), for each year available, and say how many years it rests on.
+- When quantity and value are both available, separate volume from price (value per unit) before attributing growth.
+- Adjust for trading days only when every period is counted the same way, from the data.
+- Give the expected outcome (forecast) first, then the recommended target and why it differs.
+- State the method so it can be recomputed: inputs, formula, weights and the reason for them. Do not adjust a calculated result without stating the rule.
+- Describe changes with numbers ("+9.5%"), not only adjectives.
+
 OUTPUT
-Work silently. Do not narrate tool calls, internal steps, plans, or verification — the user must never see the machinery. Respond only with what the user asked for: the result or data, a brief plain-language summary, and any relevant next step. When presenting datasets for disambiguation, include schema and database so similar names are distinguishable. If a task can't be completed (missing permissions, empty results, unresolved ambiguity) or a write can't be verified, say so plainly and offer a concrete recovery path. Use Markdown (tables, lists, bold) where it aids readability."""
+Work silently: never narrate tool calls, discovery, retries, plans or verification. Exception: if a workaround changed what was measured (a column, filter or dataset could not be used), state it under caveats.
+For analysis or recommendations, use this order:
+1. Answer first: the number or conclusion in the opening line.
+2. Inputs: one compact table of the figures used; show each figure once.
+3. Method: 1-3 lines with the formula and weights and why, enough to recompute the result.
+4. Observations: at most 3, only ones that affect the decision.
+5. Caveats: one short list at the end, material items only, including the latest data date covered.
+6. At most one suggested next step.
+Follow-ups: answer the specific question; refer back to the earlier method instead of restating it, and repeat assumptions only if they changed.
+Simple requests (lists, chart or dashboard changes): the result plus a one-line summary.
+When presenting datasets for disambiguation, include schema and database so similar names are distinguishable. If a task can't be completed (missing permissions, empty results, unresolved ambiguity) or a write can't be verified, say so plainly and offer a concrete recovery path.
+Markdown tables and lists are fine; no headings above ###."""
 
 
 # Maps a context id key to the MCP discovery tool that resolves it, plus a
@@ -252,13 +274,17 @@ def _dataset_location(info: dict[str, Any]) -> str:
     """'schema public, database X' from a dataset or dashboard-dataset dict."""
     schema = info.get("schema") or info.get("schema_name")
     database = info.get("database_name")
-    if database is None and isinstance(info.get("database"), dict):
-        database = info["database"].get("name")
+    database_id = info.get("database_id")
+    if isinstance(info.get("database"), dict):
+        database = database or info["database"].get("name")
+        database_id = database_id or info["database"].get("id")
     parts = []
     if schema:
         parts.append(f"schema {schema}")
     if database:
-        parts.append(f"database {database}")
+        # execute_sql takes the database id, not its name.
+        id_part = f" (database_id {database_id})" if database_id is not None else ""
+        parts.append(f"database {database}{id_part}")
     return ", ".join(parts)
 
 
@@ -584,9 +610,35 @@ _TRAIL_ERROR_MAX_CHARS = 200
 _TRAIL_MAX_CHARS = 3000
 
 
+def _tool_error_text(content: Any) -> str | None:
+    """Return a tool result's error message, or None if the call succeeded.
+
+    Failures arrive two ways: the in-process wrapper's text starting with ❌
+    (an exception), or the tool's own JSON response with a non-empty "error"
+    or ``"success": false`` (e.g. execute_sql against a missing table).
+    """
+    text = _content_to_text(content).strip()
+    if text.startswith("❌"):
+        return text
+    if not text.startswith("{"):
+        return None
+    try:
+        payload = json.loads(text)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    if isinstance(error, str) and error:
+        return error
+    if payload.get("success") is False:
+        return "unsuccessful (no error message)"
+    return None
+
+
 def _is_tool_error(content: Any) -> bool:
-    """Tool wrappers report failures as text starting with ❌."""
-    return _content_to_text(content).lstrip().startswith("❌")
+    """Whether a tool result reports a failure (see :func:`_tool_error_text`)."""
+    return _tool_error_text(content) is not None
 
 
 def _format_tool_trail(calls: list[dict[str, Any]]) -> str:
@@ -629,10 +681,10 @@ def _tool_calls_from_messages(messages: list[Any]) -> list[dict[str, Any]]:
     for msg in messages:
         if isinstance(msg, ToolMessage):
             if (call := calls.get(msg.tool_call_id)) is not None:
-                failed = _is_tool_error(msg.content)
-                call["status"] = "error" if failed else "ok"
-                if failed:
-                    call["error"] = _content_to_text(msg.content)
+                error = _tool_error_text(msg.content)
+                call["status"] = "ok" if error is None else "error"
+                if error is not None:
+                    call["error"] = error
             continue
         for tool_call in getattr(msg, "tool_calls", None) or []:
             if tool_call.get("id"):
@@ -915,11 +967,12 @@ class _StreamedTurn:
         # The next model call numbers its tool calls from 0 again.
         self._call_id_by_index = {}
         tool_name = message.name or ""
-        failed = _is_tool_error(message.content)
+        error = _tool_error_text(message.content)
+        failed = error is not None
         if (call := self._calls.get(message.tool_call_id)) is not None:
             call["status"] = "error" if failed else "ok"
-            if failed:
-                call["error"] = _content_to_text(message.content)
+            if error is not None:
+                call["error"] = error
         yield (
             "trace_step",
             {
