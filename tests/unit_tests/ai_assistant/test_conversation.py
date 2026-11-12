@@ -51,7 +51,9 @@ def test_tool_trail_is_folded_into_its_answer(mocker: Any) -> None:
     context = history.get_conversation_context()
 
     assert [m["role"] for m in context] == ["user", "assistant", "user"]
-    assert context[1]["content"].startswith("a1\n\n[Tool calls behind this answer")
+    assert context[1]["content"].startswith("a1\n\n[Tool calls you made")
+    # The header must say results came back, or the model may disown the answer.
+    assert "returned results" in context[1]["content"]
     assert context[1]["content"].endswith("- get_dataset_info {} -> ok")
 
 

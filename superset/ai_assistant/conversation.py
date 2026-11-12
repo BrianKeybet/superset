@@ -50,9 +50,15 @@ TOOL_TRAIL_ROLE = "tool_trail"
 # Only the most recent trails are replayed; older ones cost tokens for little.
 MAX_REPLAYED_TOOL_TRAILS = 3
 
+# The trail lists calls without their results (to save tokens). Say so
+# explicitly: otherwise the model can read the missing results as "no data
+# came back" and disown a correct earlier answer.
 _TOOL_TRAIL_HEADER = (
-    "[Tool calls behind this answer, kept for your reference; the user does "
-    "not see this]"
+    "[Tool calls you made for the answer above. They ran and returned "
+    "results, and the figures in that answer come from them; the results "
+    "are left out here only to save space. Reuse the datasets, filters and "
+    "queries; query again only for data that answer doesn't already contain. "
+    "The user does not see this list.]"
 )
 
 # Roles never shown to the user or counted as conversation messages.

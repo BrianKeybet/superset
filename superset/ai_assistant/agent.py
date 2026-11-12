@@ -45,6 +45,7 @@ from superset.ai_assistant.config import (
 )
 from superset.ai_assistant.conversation import TOOL_TRAIL_ROLE
 from superset.ai_assistant.mcp_client import get_mcp_tools
+from superset.ai_assistant.tools.sales_target import build_sales_target_tool
 from superset.utils import json
 
 # langgraph emits noisy DeprecationWarnings; filter before importing it.
@@ -132,13 +133,14 @@ OPERATING RULES
 7. Choose the dataset for data requests:
    - If [Context] lists the current dashboard's datasets, use only those. If exactly one fits the request, use it without asking. If several fit, ask which one, listing just those. If none fit, say so and ask which dataset to use.
    - If [Context] gives a chart or a dataset, use that chart's or that dataset's data.
-   - If there is no view context and the request doesn't name exactly one dataset, ask the user to specify it before querying, charting, or inspecting schema: call list_datasets and list the likely matches with name, schema and database.
+   - If there is no view context and the request doesn't name a dataset, your reply must only ask which dataset to use. A region, product, customer or other value is not a dataset name. Make one list_datasets call (search by the subject, e.g. "sales", not by the value), reply with the likely matches (name, schema, database) and stop. Do not inspect schemas, search for the value or query data until the user answers. Even if only one dataset matches, ask the user to confirm it.
 
 WORKFLOW
 For each data or chart task: discover → disambiguate (Rule 7; wait for confirmation if triggered) → validate with get_*_info → execute → verify writes by re-reading → report. Don't skip or reorder steps. If discovery finds nothing useful, tell the user before proceeding.
 
 ANALYSIS
-For trends, forecasts and targets:
+For a monthly sales target or forecast, call sales_target (one call can cover several metrics, e.g. net_sales and tonnes) and report its expected outcome, target, inputs, method and settings exactly as returned; never recompute, re-weight or trim them. Pass its override settings only when the user asks for different ones, and say they differ from the standard rule. Your own observations (e.g. volume vs price) may follow, but the numbers in the answer come from the tool.
+For other trends and comparisons:
 - Use completed periods only. State the latest data date and treat the current period as partial.
 - Compare like with like. Year-on-year growth compares the same periods: the last completed months against the same months a year earlier, never year-to-date against a single month.
 - Measure seasonality as the percentage uplift of the target period over a stated baseline (e.g. the same year's last three completed months), for each year available, and say how many years it rests on.
@@ -553,7 +555,9 @@ def create_superset_agent(tools: list[Any] | None = None) -> Any:
             )
             # Build (uncached) so a subsequent call retries tool discovery.
             return _build_agent([])
-        _agent_cache[key] = _build_agent(mcp_tools)
+        # The assistant's own tools go last so the MCP tool order, and so the
+        # cached prompt prefix, stays the same when they change.
+        _agent_cache[key] = _build_agent([*mcp_tools, build_sales_target_tool()])
 
     return _agent_cache[key]
 
@@ -592,6 +596,7 @@ _TOOL_FRIENDLY_LABELS: dict[str, str] = {
     "generate_explore_link": "Preparing a chart link",
     "get_instance_info": "Gathering Superset info",
     "health_check": "Checking system health",
+    "sales_target": "Calculating the target",
 }
 
 
